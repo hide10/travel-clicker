@@ -3,9 +3,10 @@
 // =============================================================
 // CONSTANTS
 // =============================================================
-const VERSION        = 2;
-const SAVE_KEY       = 'travel_clicker_v2';
+const VERSION        = 4;
+const SAVE_KEY       = 'travel_clicker_v4';
 const AUTOSAVE_MS    = 30000;
+const CLICKS_PER_LOC = 30;   // 次の目的地まで必要なクリック数（30クリック制）
 
 // =============================================================
 // GAME STATE
@@ -17,9 +18,12 @@ let G = {
   money:            0,         // 💰 円（スポンサーが払う、乗り物・カメラに使う）
   vehicleLevels:    {},        // { vehicleId: level }
   sponsorCounts:    {},        // { sponsorId: count }
-  ownedCameras:     [],        // 購入済みカメラID配列
-  unlockedVehicles: ['legs'],  // 解放済み乗り物ID
-  visitedIds:       [],        // 通過済みロケーションID
+  equipmentCounts:  {},        // { equipmentId: count } 撮影機材台数
+  unlockedVehicles: [],        // 解放済み乗り物ID
+  locationIndex:    0,         // 次に訪れる予定のロケーションインデックス
+  lastLocDist:      0,         // 前回の目的地到着時のtotalDistance
+  nextLocDist:      75,        // 次の目的地までの距離（到着時に確定）
+  visitedIds:       [],        // 通過済みロケーションID（フェーズ検出等に使用）
   version:          VERSION,
 };
 
@@ -34,6 +38,7 @@ let shopDirty    = true;
 let activeTab    = 'sponsor';  // 'sponsor' | 'vehicle' | 'camera'
 let clickBurst   = 0;          // クリック後の残り演出時間(ms)
 let floats       = [];         // フロートテキスト配列 [{x,y,text,life,maxLife}]
+let landmark     = { id: null, timer: 0, maxTimer: 5000 };  // 通過時ランドマーク
 
 // =============================================================
 // INIT
@@ -41,13 +46,20 @@ let floats       = [];         // フロートテキスト配列 [{x,y,text,life
 function init() {
   loadGame();
   recalcAll();
+  // 初回プレイ: 自宅を訪問して旅をスタート
+  if (G.locationIndex === 0) {
+    onLocationReached(LOCATIONS[0]);
+    G.locationIndex = 1;
+    G.lastLocDist = 0;
+    G.nextLocDist = 75;  // 初回距離（徒歩 1.25 m/s × 60s = 75m）
+  }
   setupInput();
   setupCanvas();
   setInterval(saveGame, AUTOSAVE_MS);
   renderShop();
   updateUI();
   requestAnimationFrame(gameLoop);
-  addLog('🎒 旅に出よう！ホイール・クリック・タップで前進', 'system');
+  addLog('🎒 旅に出よう！クリック・タップ・ホイールで前進', 'system');
 }
 
 // =============================================================
@@ -67,6 +79,7 @@ function gameLoop(ts) {
   if (income > 0) G.money += income;
 
   clickBurst = Math.max(0, clickBurst - dt * 1000);
+  if (landmark.timer > 0) landmark.timer = Math.max(0, landmark.timer - dt * 1000);
 
   // フロートテキスト更新
   floats = floats.filter(f => f.life > 0);
@@ -87,13 +100,12 @@ function gameLoop(ts) {
 // =============================================================
 function travelAuto(meters) {
   G.totalDistance += meters;
-  G.money += 0;  // お金は収入で別途加算
-  checkLocationUnlocks();
+  checkLocationProgress();
 }
 
 function travelManual(meters) {
   G.totalDistance += meters;
-  checkLocationUnlocks();
+  checkLocationProgress();
   Audio.step(Math.random() > 0.5);
   clickBurst = 300;
 
@@ -138,34 +150,32 @@ function onWalkBtn() {
 }
 
 // クリック1回分の距離
-// clickPerLevel あり（足・自転車）: そのレベル × clickPerLevel を合算
-// エンジン乗り物あり（原付以降）: autoSpeed × 0.3 を加算
+// 足・自転車（clickPerLevel）のみ。エンジン乗り物はオート専用
 function clickDist() {
-  // 手動系（clickPerLevel）の合計
   const manualBonus = VEHICLES
     .filter(v => v.clickPerLevel)
     .reduce((sum, v) => {
       const lv = G.vehicleLevels[v.id] || 0;
       return sum + v.clickPerLevel * lv;
     }, 0);
-
-  // エンジン系乗り物のボーナス
-  const topV = getTopVehicle();
-  const engineBonus = topV
-    ? topV.baseSpeed * (G.vehicleLevels[topV.id] || 1) * 0.3
-    : 0;
-
-  return Math.max(0.5, manualBonus + engineBonus);
+  return Math.max(0.5, manualBonus);
 }
 
 // =============================================================
-// LOCATION UNLOCK
+// LOCATION PROGRESSION（距離ベース・到着時に次の距離を動的設定）
 // =============================================================
-function checkLocationUnlocks() {
-  for (const loc of LOCATIONS) {
-    if (!G.visitedIds.includes(loc.id) && G.totalDistance >= loc.distance) {
-      onLocationReached(loc);
-    }
+function checkLocationProgress() {
+  while (G.locationIndex < LOCATIONS.length &&
+         G.totalDistance - G.lastLocDist >= G.nextLocDist) {
+    // 次の目的地に到着
+    G.lastLocDist += G.nextLocDist;
+    onLocationReached(LOCATIONS[G.locationIndex]);
+    G.locationIndex++;
+    // 到着後の現在のclick速度で次の距離を確定
+    // clickDist()*5 = 1ボタン押しの距離、それ×CLICKS_PER_LOC
+    // 次の目的地距離 = (手動クリック寄与 + 自動移動) × 60秒 を目安に設定
+    // 手動: 2.5m/press × 0.5 press/s = 1.25 m/s 固定（スピードアップに依存させない）
+    G.nextLocDist = Math.max((1.25 + autoSpeed) * 60, 30);
   }
 }
 
@@ -181,6 +191,7 @@ function onLocationReached(loc) {
   G.followers += gained;
   addLog(`📍 <b>${loc.name}</b> — ${loc.description}`, 'location');
   addLog(`📸 投稿した！ +${fmtNum(gained)} フォロワー（人気${fmtNum(G.popularity)}）`, 'follower');
+  landmark = { id: loc.id, timer: 5000, maxTimer: 5000 };
 
   // 乗り物解放
   if (loc.unlocksVehicle && !G.unlockedVehicles.includes(loc.unlocksVehicle)) {
@@ -237,10 +248,37 @@ function buyVehicle(id) {
   const cost = getVehicleLvCost(id);
   if (G.money < cost) return;
   G.money -= cost;
-  G.vehicleLevels[id] = (G.vehicleLevels[id] || 0) + 1;
+  const prevLv = G.vehicleLevels[id] || 0;
+  G.vehicleLevels[id] = prevLv + 1;
+
+  // 飛行機チケット初回購入 → 原付・車は没収
+  if (id === 'airplane' && prevLv === 0) {
+    const confiscated = [];
+    ['moped', 'car'].forEach(v => {
+      if ((G.vehicleLevels[v] || 0) > 0) {
+        confiscated.push(VEHICLES.find(x => x.id === v).name);
+        G.vehicleLevels[v] = 0;
+      }
+    });
+    if (confiscated.length > 0) {
+      addLog(`🛂 ${confiscated.join('・')}は空港で没収された…`, 'system');
+    }
+  }
+
   recalcAll();
   Audio.purchase();
   shopDirty = true;
+
+  // unlockRequires チェック（レベルが条件を満たした乗り物を解放）
+  for (const v of VEHICLES) {
+    if (v.unlockRequires && !G.unlockedVehicles.includes(v.id)) {
+      if ((G.vehicleLevels[v.unlockRequires.id] || 0) >= v.unlockRequires.level) {
+        G.unlockedVehicles.push(v.id);
+        addLog(`🔓 <b>${v.name}</b> が解放された！`, 'unlock');
+        shopDirty = true;
+      }
+    }
+  }
 }
 
 // =============================================================
@@ -266,13 +304,24 @@ function buySponsor(id) {
 }
 
 // =============================================================
-// CAMERAS（1回購入）
+// EQUIPMENT（撮影機材・台数制）
 // =============================================================
-function buyCamera(id) {
-  const c = CAMERAS.find(c => c.id === id);
-  if (!c || G.ownedCameras.includes(id) || G.money < c.cost) return;
-  G.money -= c.cost;
-  G.ownedCameras.push(id);
+function getEquipmentCost(id) {
+  const e = EQUIPMENT.find(e => e.id === id);
+  if (!e) return Infinity;
+  const n = G.equipmentCounts[id] || 0;
+  return Math.ceil(e.baseCost * Math.pow(e.costMult, n));
+}
+
+function buyEquipment(id) {
+  const cost = getEquipmentCost(id);
+  if (G.money < cost) return;
+  G.money -= cost;
+  G.equipmentCounts[id] = (G.equipmentCounts[id] || 0) + 1;
+  const e = EQUIPMENT.find(e => e.id === id);
+  const n = G.equipmentCounts[id];
+  const total = Math.pow(e.baseMult, n).toFixed(2);
+  addLog(`🎥 <b>${e.name}</b> ${n}台目！フォロワー獲得 ×${total}`, 'unlock');
   recalcAll();
   Audio.purchase();
   shopDirty = true;
@@ -295,18 +344,18 @@ function recalcAll() {
     if (s) sponsorBase += s.baseIncome * cnt;
   }
 
-  // カメラ倍率（購入済みカメラのmultを掛け合わせ）
+  // 機材倍率（各機材: baseMult ^ 台数 の積）
   cameraMultiplier = 1;
-  for (const id of G.ownedCameras) {
-    const c = CAMERAS.find(c => c.id === id);
-    if (c) cameraMultiplier *= c.mult;
+  for (const [id, cnt] of Object.entries(G.equipmentCounts)) {
+    const e = EQUIPMENT.find(e => e.id === id);
+    if (e && cnt > 0) cameraMultiplier *= Math.pow(e.baseMult, cnt);
   }
 }
 
-// 人気によるフォロワー獲得倍率: 1 + √(popularity/10)
-// 0人気→1x, 10→2x, 40→3x, 90→4x
+// 人気によるフォロワー獲得倍率: 1 + log10(popularity+1)
+// pop=0→1x, pop=9→2x, pop=99→3x, pop=999→4x（対数で穏やか）
 function popularityMultiplier() {
-  return 1 + Math.sqrt(G.popularity / 10);
+  return 1 + Math.log10(G.popularity + 1);
 }
 
 // 人気による収入倍率（小さめ）: 1 + popularity/5000
@@ -324,7 +373,7 @@ function renderShop() {
 
   if (activeTab === 'sponsor') renderSponsors(el);
   else if (activeTab === 'vehicle') renderVehicles(el);
-  else if (activeTab === 'camera') renderCameras(el);
+  else if (activeTab === 'equipment') renderEquipment(el);
 }
 
 function renderSponsors(el) {
@@ -349,16 +398,28 @@ function renderSponsors(el) {
 function renderVehicles(el) {
   for (const v of VEHICLES) {
     if (!G.unlockedVehicles.includes(v.id)) continue;
-    const lv      = G.vehicleLevels[v.id] || 0;
-    const cost    = getVehicleLvCost(v.id);
-    const canBuy  = G.money >= cost;
-    const nextSpd = v.baseSpeed * (lv + 1);
-    const label   = lv === 0 ? '解放' : `Lv.${lv} → Lv.${lv + 1}`;
+    const lv     = G.vehicleLevels[v.id] || 0;
+    const cost   = getVehicleLvCost(v.id);
+    const canBuy = G.money >= cost;
+    const label  = lv === 0 ? '解放' : `Lv.${lv} → Lv.${lv+1}`;
+
+    let rate;
+    if (v.clickPerLevel) {
+      // 手動系: クリック距離の増加量を表示
+      const cur  = v.clickPerLevel * lv;
+      const next = v.clickPerLevel * (lv + 1);
+      rate = lv === 0
+        ? `クリック +${fmtDist(next)}/クリック`
+        : `クリック ${fmtDist(cur)} → ${fmtDist(next)}`;
+    } else {
+      // エンジン系: 速度を表示
+      rate = `${label} → ${fmtSpeed(v.baseSpeed * (lv+1))}`;
+    }
 
     const div = makeShopItem(
       v.emoji, v.name,
       v.description,
-      `${label} → ${fmtSpeed(nextSpd)}/台`,
+      rate,
       fmtYen(cost),
       canBuy,
       `buyVehicle('${v.id}')`
@@ -367,20 +428,25 @@ function renderVehicles(el) {
   }
 }
 
-function renderCameras(el) {
-  for (const c of CAMERAS) {
-    if (G.followers < c.followersRequired) continue;
-    const owned   = G.ownedCameras.includes(c.id);
-    const canBuy  = !owned && G.money >= c.cost;
+function renderEquipment(el) {
+  for (const e of EQUIPMENT) {
+    if (G.popularity < e.popularityRequired) continue;
+    const cnt     = G.equipmentCounts[e.id] || 0;
+    const cost    = getEquipmentCost(e.id);
+    const canBuy  = G.money >= cost;
+    const curMult = cnt === 0 ? 1 : Math.pow(e.baseMult, cnt);
+    const nxtMult = Math.pow(e.baseMult, cnt + 1);
+    const rate    = cnt === 0
+      ? `×${e.baseMult} /台`
+      : `${cnt}台 | ×${curMult.toFixed(2)} → ×${nxtMult.toFixed(2)}`;
 
     const div = makeShopItem(
-      c.emoji, c.name,
-      c.description,
-      `フォロワー獲得 ×${c.mult}`,
-      owned ? '購入済み' : fmtYen(c.cost),
+      e.emoji, e.name,
+      e.description,
+      rate,
+      fmtYen(cost),
       canBuy,
-      `buyCamera('${c.id}')`,
-      owned
+      `buyEquipment('${e.id}')`
     );
     el.appendChild(div);
   }
@@ -420,7 +486,6 @@ function updateUI() {
   const nxt = getNextLocation();
   const d   = G.totalDistance;
 
-  set('cur-loc',     cur.name);
   set('total-dist',  fmtDist(d));
   set('popularity-val', fmtNum(G.popularity));
   set('follower-val',   fmtNum(G.followers));
@@ -435,19 +500,21 @@ function updateUI() {
   let label = '🚶 歩く';
   if (topV && topV.clickLabel) label = topV.clickLabel;
   else if (hasLegs && legV.clickLabel) label = legV.clickLabel;
+  label += '\n+' + fmtDist(clickDist() * 5);
   const walkBtn = document.getElementById('walk-btn');
   if (walkBtn) walkBtn.textContent = label;
 
   if (nxt) {
+    const traveled  = G.totalDistance - G.lastLocDist;
+    const remaining = Math.max(0, G.nextLocDist - traveled);
+    const pct       = Math.min(100, traveled / G.nextLocDist * 100);
     set('nxt-loc',  nxt.name);
-    set('nxt-dist', fmtDist(nxt.distance - d) + ' 先');
-    const span = nxt.distance - cur.distance;
-    const pct  = span > 0 ? Math.min(100, (d - cur.distance) / span * 100) : 100;
+    set('nxt-dist', fmtDist(remaining) + ' 先');
     const fill = document.getElementById('progress-fill');
     if (fill) fill.style.width = pct + '%';
   } else {
     set('nxt-loc',  '—');
-    set('nxt-dist', '旅は続く…');
+    set('nxt-dist', '地球の旅は終わりなし…');
   }
 
   // ショップのボタン状態だけ更新（全再描画を避ける）
@@ -460,9 +527,9 @@ function updateUI() {
 
     let cost = Infinity;
     let currency = 'money';
-    if (activeTab === 'sponsor')  { cost = getSponsorFollowerCost(id); currency = 'followers'; }
-    if (activeTab === 'vehicle')  cost = getVehicleLvCost(id);
-    if (activeTab === 'camera')   cost = (CAMERAS.find(c => c.id === id) || {}).cost || Infinity;
+    if (activeTab === 'sponsor')   { cost = getSponsorFollowerCost(id); currency = 'followers'; }
+    if (activeTab === 'vehicle')   cost = getVehicleLvCost(id);
+    if (activeTab === 'equipment') cost = getEquipmentCost(id);
 
     const balance = currency === 'followers' ? G.followers : G.money;
     const can = balance >= cost && !item.classList.contains('owned');
@@ -536,15 +603,12 @@ const PHASE_COLORS = {
 };
 
 function getCurrentLocation() {
-  for (let i = G.visitedIds.length - 1; i >= 0; i--) {
-    const loc = LOCATIONS.find(l => l.id === G.visitedIds[i]);
-    if (loc) return loc;
-  }
-  return LOCATIONS[0];
+  const idx = Math.max(0, G.locationIndex - 1);
+  return LOCATIONS[idx] || LOCATIONS[0];
 }
 
 function getNextLocation() {
-  return LOCATIONS.find(l => !G.visitedIds.includes(l.id)) || null;
+  return G.locationIndex < LOCATIONS.length ? LOCATIONS[G.locationIndex] : null;
 }
 
 function setupCanvas() {
@@ -618,6 +682,15 @@ function drawScene(ts) {
     }
   }
 
+  // ランドマーク（通過時5秒表示・フェードイン/アウト）
+  if (landmark.timer > 0) {
+    const fadeIn  = Math.min(1, (landmark.maxTimer - landmark.timer) / 400);
+    const fadeOut = Math.min(1, landmark.timer / 700);
+    ctx.globalAlpha = Math.min(fadeIn, fadeOut);
+    drawLandmark(landmark.id, W, Math.round(H * 0.65));
+    ctx.globalAlpha = 1;
+  }
+
   // 乗り物 + キャラ
   const topV   = getTopVehicle();
   const sprite = topV ? topV.sprite : 'walk';
@@ -645,6 +718,7 @@ function drawVehicleSprite(sprite, x, y, frame, isMoving, isClicking) {
   switch (sprite) {
     case 'walk':      drawWalk(x, y, frame); break;
     case 'bicycle':   drawBicycle(x, y, frame, isClicking); break;
+    case 'ekickboard':drawEKickboard(x, y, frame, isClicking); break;
     case 'moped':     drawMoped(x, y, frame, isClicking); break;
     case 'bus':       drawBus(x, y, frame); break;
     case 'train':     drawTrain(x, y, frame); break;
@@ -705,6 +779,37 @@ function drawBicycle(x, y, frame, fast) {
   if (fast) {  // スピード線
     ctx.fillStyle = 'rgba(255,255,255,0.4)';
     [-8,-14,-20].forEach(dx => ctx.fillRect(x + dx, y + 20, 6, 2));
+  }
+}
+
+function drawEKickboard(x, y, frame, fast) {
+  const p = PX;
+  const skinColor = '#ffcc88', boardColor = '#333', accentColor = '#44aaff';
+  // デッキ（板）
+  ctx.fillStyle = boardColor;
+  ctx.fillRect(x, y + 30, 36, 4);
+  // ハンドル支柱
+  ctx.fillStyle = '#555';
+  ctx.fillRect(x + 28, y + 8, 3, 23);
+  // ハンドルバー
+  ctx.fillStyle = boardColor;
+  ctx.fillRect(x + 18, y + 8, 20, 3);
+  // 電動モーター（青いアクセント）
+  ctx.fillStyle = accentColor;
+  ctx.fillRect(x + 2, y + 31, 10, 3);
+  // 車輪
+  drawCircle(x + 6,  y + 36, 6, '#222');
+  drawCircle(x + 30, y + 36, 6, '#222');
+  drawCircle(x + 6,  y + 36, 3, '#666');
+  drawCircle(x + 30, y + 36, 3, '#666');
+  // 乗り手
+  ctx.fillStyle = skinColor;  ctx.fillRect(x + 18, y + 2, 8, 8);  // 頭
+  ctx.fillStyle = '#5599ee'; ctx.fillRect(x + 17, y + 10, 9, 12); // 体（直立）
+  ctx.fillStyle = '#445'; ctx.fillRect(x + 17, y + 22, 4, 9);     // 左足
+  ctx.fillRect(x + 23, y + 22, 4, 8);                              // 右足
+  if (fast) {
+    ctx.fillStyle = 'rgba(68,170,255,0.5)';
+    [-8,-14,-20].forEach(dx => ctx.fillRect(x + dx, y + 25, 6, 2));
   }
 }
 
@@ -839,6 +944,1787 @@ function drawHypershift(x, y) {
   });
 }
 
+// =============================================================
+// LANDMARKS（現在地の建物・景色）
+// =============================================================
+function drawLandmark(locId, W, groundY) {
+  const lx = Math.round(W * 0.68);
+  switch (locId) {
+    // --- 自宅・近所 ---
+    case 'home':            drawHome(lx, groundY);          break;
+    case 'konbini':         drawKonbini(lx, groundY);       break;
+    case 'park':
+    case 'nishi_park':
+    case 'yoyogi':
+    case 'shinjuku_goyen':
+    case 'kichijoji':       drawPark(lx, groundY);          break;
+    case 'station':
+    case 'next_station':    drawStation(lx, groundY);       break;
+    case 'shotengai':       drawShotengai(lx, groundY);     break;
+    case 'jinja':
+    case 'ise':
+    case 'dazaifu':
+    case 'shimane':         drawTorii(lx, groundY, '#cc3300'); break;
+    case 'kyoto_fushimi':   drawToriiGates(lx, groundY);   break;
+
+    // --- 東京名所 ---
+    case 'harajuku':        drawCrepeShop(lx, groundY);     break;
+    case 'omotesando':
+    case 'ginza':
+    case 'shimokitazawa':
+    case 'nakameguro':      drawBoutiqueRow(lx, groundY);   break;
+    case 'roppongi':
+    case 'ikebukuro':
+    case 'shimbashi':
+    case 'shiodome':        drawUrban(lx, groundY);         break;
+    case 'tokyo_tower':     drawTokyoTower(lx, groundY);    break;
+    case 'tsukiji':
+    case 'hakata':
+    case 'osaka_kuromon':   drawFishMarket(lx, groundY);    break;
+    case 'odaiba':          drawRainbowBridge(lx, groundY); break;
+    case 'asakusa':         drawPagoda(lx, groundY);        break;
+    case 'ueno':            drawPanda(lx, groundY);         break;
+    case 'akihabara':       drawAkiba(lx, groundY);         break;
+    case 'yanaka':          drawOldTown(lx, groundY);       break;
+    case 'shibuya':
+    case 'shinjuku':        drawUrban(lx, groundY);         break;
+    case 'skytree':         drawSkyTree(lx, groundY);       break;
+    case 'kawagoe':         drawKawagoe(lx, groundY);       break;
+
+    // --- 横浜・関東 ---
+    case 'yokohama':
+    case 'minatomirai':     drawHarbor(lx, groundY);        break;
+    case 'yokohama_red':    drawRedBrick(lx, groundY);      break;
+    case 'chiba_tdr':       drawCastle(lx, groundY, '#fff', '#88ccff'); break;
+    case 'narita':          drawAirportTerminal(lx, groundY); break;
+    case 'kamakura':        drawBuddha(lx, groundY);        break;
+    case 'enoshima':
+    case 'choshi':          drawLighthouse(lx, groundY);    break;
+    case 'shonan':          drawBeach(lx, groundY);         break;
+    case 'hakone':
+    case 'kusatsu':
+    case 'kyushu_beppu':
+    case 'kyushu_kirishima':
+    case 'shikoku_matsuyama':
+    case 'atami':           drawOnsen(lx, groundY);         break;
+    case 'fujikawaguchiko': drawMtFuji(lx, W, groundY);    break;
+    case 'mt_fuji':         drawMtFuji(lx, W, groundY);    break;
+    case 'nikko':           drawNikko(lx, groundY);         break;
+    case 'nasu':
+    case 'tachikawa':       drawPark(lx, groundY);          break;
+
+    // --- 東海・関西 ---
+    case 'nagoya':          drawTakoyaki(lx, groundY);      break;
+    case 'nagoya_castle':   drawCastle(lx, groundY, '#cccc88', '#444'); break;
+    case 'toyota':          drawFactory(lx, groundY);       break;
+    case 'toba':
+    case 'ueno':            drawAquarium(lx, groundY);      break;
+    case 'kyoto_arashiyama':drawBamboo(lx, groundY);        break;
+    case 'kyoto_kinkakuji': drawKinkakuji(lx, groundY);     break;
+    case 'kyoto_gion':
+    case 'kyoto_kiyomizu':  drawPagoda(lx, groundY);        break;
+    case 'nara':            drawDeer(lx, groundY);          break;
+    case 'osaka':
+    case 'osaka_dotonbori': drawDotonbori(lx, groundY);     break;
+    case 'osaka_USJ':       drawUrban(lx, groundY);         break;
+    case 'kobe':
+    case 'kobe_beef':       drawBoutiqueRow(lx, groundY);   break;
+    case 'himeji':          drawCastle(lx, groundY, '#f5f5f0', '#666'); break;
+
+    // --- 中国・四国・九州 ---
+    case 'tottori':         drawSandDune(lx, groundY);      break;
+    case 'hiroshima':       drawDome(lx, groundY);          break;
+    case 'miyajima':        drawTorii(lx, groundY, '#cc3300', true); break;
+    case 'onomichi':        drawHillTown(lx, groundY);      break;
+    case 'akiyoshidai':     drawKarst(lx, groundY);         break;
+    case 'kanmon':          drawHarbor(lx, groundY);        break;
+    case 'fukuoka':         drawRamenBowl(lx, groundY);     break;
+    case 'kyushu_nagasaki': drawOldBuilding(lx, groundY);   break;
+    case 'kyushu_aso':      drawVolcano(lx, groundY);       break;
+    case 'yakushima':       drawAncientTree(lx, groundY);   break;
+    case 'shikoku_naruto':  drawWhirlpool(lx, groundY);     break;
+    case 'shikoku_kochi':   drawBeach(lx, groundY);         break;
+    case 'shikoku_ohenro':  drawTorii(lx, groundY, '#cc3300'); break;
+
+    // --- 北海道 ---
+    case 'hokkaido_sapporo':drawSnowScene(lx, groundY);     break;
+    case 'hokkaido_otaru':  drawHarbor(lx, groundY);        break;
+    case 'hokkaido_hakodate':drawHillTown(lx, groundY);     break;
+    case 'hokkaido_furano': drawLavender(lx, groundY);      break;
+    case 'hokkaido_shiretoko':drawForest(lx, groundY);      break;
+
+    // --- 沖縄 ---
+    case 'naha':            drawShisa(lx, groundY);         break;
+    case 'okinawa_beach':
+    case 'shonan':
+    case 'ishigaki':
+    case 'miyako':
+    case 'hawaii':
+    case 'hawaii_waikiki':  drawTropicalBeach(lx, groundY); break;
+
+    // --- 海外 ---
+    case 'la':
+    case 'la_hollywood':    drawHollywood(lx, groundY);     break;
+    case 'las_vegas':       drawVegas(lx, groundY);         break;
+    case 'ny':
+    case 'ny_times':        drawStatueOfLiberty(lx, groundY); break;
+    case 'machu_picchu':    drawMachuPicchu(lx, groundY);   break;
+    case 'rio':             drawRio(lx, groundY);           break;
+    case 'london':
+    case 'london_abbey':    drawBigBen(lx, groundY);        break;
+    case 'paris':
+    case 'paris_louvre':    drawEiffelTower(lx, groundY);   break;
+    case 'rome':
+    case 'rome_trevi':      drawColosseum(lx, groundY);     break;
+    case 'barcelona':       drawSagrada(lx, groundY);       break;
+    case 'amsterdam':       drawWindmill(lx, groundY);      break;
+    case 'santorini':       drawSantorini(lx, groundY);     break;
+    case 'dubai':
+    case 'dubai_desert':    drawBurj(lx, groundY);          break;
+    case 'pyramids':        drawPyramids(lx, groundY);      break;
+    case 'taj_mahal':       drawTajMahal(lx, groundY);      break;
+    case 'bali':            drawRiceTerraces(lx, groundY);  break;
+    case 'singapore':       drawMerlion(lx, groundY);       break;
+    case 'seoul':           drawKoreanPalace(lx, groundY);  break;
+    case 'beijing':         drawGreatWall(lx, groundY);     break;
+  }
+}
+
+// --- 商店街 ---
+function drawShotengai(x, groundY) {
+  const p = PX;
+  // アーケード屋根
+  ctx.fillStyle = '#cc8844';
+  ctx.fillRect(x-14*p, groundY-18*p, 30*p, 3*p);
+  // 店舗×3
+  const shopColors = ['#ff6644','#4488ff','#44bb44'];
+  for (let i = 0; i < 3; i++) {
+    const sx = x - 13*p + i*10*p;
+    ctx.fillStyle = shopColors[i];
+    ctx.fillRect(sx, groundY-15*p, 8*p, 10*p);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(sx+p, groundY-14*p, 6*p, 4*p);
+    ctx.fillStyle = '#333';
+    ctx.fillRect(sx+2*p, groundY-10*p, 4*p, 5*p);
+  }
+  // 暖簾
+  ['#ff4422','#2244ff','#22aa44'].forEach((c,i) => {
+    ctx.fillStyle = c;
+    const sx = x - 12*p + i*10*p;
+    [0,2,4].forEach(dx => ctx.fillRect(sx+dx*p, groundY-16*p, p, 3*p));
+  });
+}
+
+// --- 鳥居 ---
+function drawTorii(x, groundY, color='#cc3300', floating=false) {
+  const p = PX;
+  const by = floating ? groundY-10*p : groundY;
+  ctx.fillStyle = color;
+  // 柱×2
+  ctx.fillRect(x-8*p, by-20*p, 3*p, 20*p);
+  ctx.fillRect(x+5*p, by-20*p, 3*p, 20*p);
+  // 笠木（上の横棒）
+  ctx.fillRect(x-10*p, by-21*p, 20*p, 3*p);
+  // 貫（中段の横棒）
+  ctx.fillRect(x-7*p, by-14*p, 14*p, 2*p);
+  if (floating) {
+    // 水面
+    ctx.fillStyle = 'rgba(0,100,200,0.5)';
+    ctx.fillRect(x-14*p, by, 28*p, 3*p);
+  }
+}
+
+// --- 伏見稲荷（鳥居並び）---
+function drawToriiGates(x, groundY) {
+  const p = PX;
+  for (let i = 0; i < 3; i++) {
+    const bx = x - 12*p + i*9*p;
+    const alpha = 0.6 + i*0.2;
+    ctx.globalAlpha = alpha;
+    drawTorii(bx, groundY, '#cc3300');
+  }
+  ctx.globalAlpha = 1;
+}
+
+// --- 東京タワー ---
+function drawTokyoTower(x, groundY) {
+  const p = PX;
+  // 塔本体（赤白交互）
+  const segments = [[0,5,'#cc2200'],[5,5,'#ffffff'],[10,8,'#cc2200'],[18,8,'#ffffff'],[26,10,'#cc2200']];
+  segments.forEach(([oy, h, c]) => {
+    const w = Math.max(1, 12 - oy/3) | 0;
+    ctx.fillStyle = c;
+    ctx.fillRect(x - w*p/2, groundY-(36-oy)*p, w*p, h*p);
+  });
+  // 脚×4
+  ctx.fillStyle = '#cc2200';
+  [[-10,-1],[5,1],[-10,1],[5,-1]].forEach(([dx,dir]) => {
+    ctx.fillRect(x+dx*p, groundY-5*p, 2*p, 5*p);
+  });
+  ctx.fillRect(x-10*p, groundY-5*p, 2*p, 5*p);
+  ctx.fillRect(x+8*p,  groundY-5*p, 2*p, 5*p);
+  // アンテナ
+  ctx.fillStyle = '#cc2200';
+  ctx.fillRect(x-p/2, groundY-42*p, p, 6*p);
+}
+
+// --- スカイツリー ---
+function drawSkyTree(x, groundY) {
+  const p = PX;
+  // 本体（細い高い塔）
+  for (let i = 0; i < 50; i++) {
+    const w = Math.max(1, 6 - i/10) | 0;
+    ctx.fillStyle = i % 8 < 4 ? '#2244cc' : '#3366ff';
+    ctx.fillRect(x - w*p/2, groundY-(50-i)*p, w*p, p);
+  }
+  // 展望台（2か所）
+  ctx.fillStyle = '#4488ff';
+  ctx.fillRect(x-4*p, groundY-28*p, 8*p, 3*p);
+  ctx.fillRect(x-3*p, groundY-38*p, 6*p, 3*p);
+  // 脚
+  ctx.fillStyle = '#1a3388';
+  ctx.fillRect(x-5*p, groundY-4*p, 3*p, 4*p);
+  ctx.fillRect(x+2*p,  groundY-4*p, 3*p, 4*p);
+}
+
+// --- 浅草・五重塔 ---
+function drawPagoda(x, groundY) {
+  const p = PX;
+  const tiers = [[12,5],[10,4],[8,4],[6,3],[4,3]];
+  tiers.forEach(([w, h], i) => {
+    const y = groundY - (i+1)*(h+1)*p - 5*p;
+    // 屋根（赤）
+    ctx.fillStyle = '#cc2200';
+    ctx.fillRect(x - w*p, y, 2*w*p, 2*p);
+    // 壁（白）
+    ctx.fillStyle = '#f5f0e8';
+    ctx.fillRect(x - (w-2)*p, y+2*p, 2*(w-2)*p, h*p);
+  });
+  // 相輪（頂点の棒）
+  ctx.fillStyle = '#888844';
+  ctx.fillRect(x-p/2, groundY-42*p, p, 6*p);
+}
+
+// --- パンダ（上野） ---
+function drawPanda(x, groundY) {
+  const p = PX;
+  // 竹
+  ctx.fillStyle = '#44aa44';
+  ctx.fillRect(x+8*p, groundY-20*p, 3*p, 20*p);
+  [0,4,8,12].forEach(oy => {
+    ctx.fillStyle = '#55bb55';
+    ctx.fillRect(x+11*p, groundY-(18-oy)*p, 6*p, 2*p);
+  });
+  // パンダ体
+  ctx.fillStyle = '#fff';
+  drawCircle(x, groundY-12*p, 8*p, '#fff');
+  drawCircle(x, groundY-8*p, 8*p, '#fff');
+  // 目パッチ（黒）
+  drawCircle(x-3*p, groundY-14*p, 3*p, '#222');
+  drawCircle(x+3*p, groundY-14*p, 3*p, '#222');
+  // 耳
+  drawCircle(x-7*p, groundY-18*p, 3*p, '#222');
+  drawCircle(x+7*p, groundY-18*p, 3*p, '#222');
+  // 目（白目）
+  drawCircle(x-3*p, groundY-14*p, p, '#fff');
+  drawCircle(x+3*p, groundY-14*p, p, '#fff');
+  // 鼻
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x-p, groundY-12*p, 2*p, p);
+}
+
+// --- 秋葉原（電気街） ---
+function drawAkiba(x, groundY) {
+  const p = PX;
+  // ビル
+  ctx.fillStyle = '#334455';
+  ctx.fillRect(x-12*p, groundY-22*p, 25*p, 22*p);
+  // 派手な看板
+  const colors = ['#ff0044','#ffcc00','#00ccff','#ff6600','#44ff44'];
+  colors.forEach((c,i) => {
+    ctx.fillStyle = c;
+    ctx.fillRect(x-11*p + i*5*p, groundY-20*p, 4*p, 3*p);
+  });
+  // 窓
+  ctx.fillStyle = '#aaddff';
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 4; col++) {
+      ctx.fillRect(x-10*p+col*6*p, groundY-16*p+row*5*p, 4*p, 3*p);
+    }
+  }
+  // アニメキャラ的ロゴ
+  ctx.fillStyle = '#ff0044';
+  ctx.fillRect(x-4*p, groundY-22*p, 8*p, 3*p);
+}
+
+// --- 下町（谷根千） ---
+function drawOldTown(x, groundY) {
+  const p = PX;
+  for (let i = 0; i < 3; i++) {
+    const bx = x - 12*p + i*9*p;
+    ctx.fillStyle = ['#c8a070','#b89060','#d4b080'][i];
+    ctx.fillRect(bx, groundY-14*p, 8*p, 14*p);
+    // 瓦屋根
+    ctx.fillStyle = '#555566';
+    ctx.fillRect(bx-p, groundY-16*p, 10*p, 3*p);
+    // 窓
+    ctx.fillStyle = '#ffeeaa';
+    ctx.fillRect(bx+p, groundY-12*p, 3*p, 3*p);
+    ctx.fillRect(bx+p, groundY-7*p, 3*p, 3*p);
+  }
+}
+
+// --- おしゃれ商業ビル（表参道・銀座等）---
+function drawBoutiqueRow(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#f0ede8';
+  ctx.fillRect(x-12*p, groundY-24*p, 26*p, 24*p);
+  // 大きなガラス窓
+  ctx.fillStyle = '#aaccee';
+  ctx.fillRect(x-10*p, groundY-22*p, 10*p, 12*p);
+  ctx.fillRect(x+2*p,  groundY-22*p, 10*p, 12*p);
+  ctx.fillStyle = '#88aacc';
+  ctx.fillRect(x-10*p, groundY-22*p, 10*p, 2*p);
+  ctx.fillRect(x+2*p,  groundY-22*p, 10*p, 2*p);
+  // 店名サイン
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x-8*p, groundY-9*p, 16*p, 2*p);
+  // 植栽
+  drawCircle(x-14*p, groundY-4*p, 4*p, '#44aa44');
+  drawCircle(x+14*p, groundY-4*p, 4*p, '#44aa44');
+}
+
+// --- 魚市場（築地・博多等）---
+function drawFishMarket(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#ddbbaa';
+  ctx.fillRect(x-12*p, groundY-10*p, 26*p, 10*p);
+  // テント
+  ctx.fillStyle = '#2244cc';
+  ctx.fillRect(x-14*p, groundY-12*p, 30*p, 3*p);
+  // 魚（マグロっぽい）
+  ctx.fillStyle = '#cc4444';
+  ctx.fillRect(x-8*p, groundY-8*p, 10*p, 4*p);
+  ctx.fillRect(x-9*p, groundY-7*p, p, 2*p);
+  ctx.fillStyle = '#ff6666';
+  ctx.fillRect(x-6*p, groundY-7*p, 6*p, 2*p);
+  // 氷（水色）
+  ctx.fillStyle = '#aaddff';
+  ctx.fillRect(x-7*p, groundY-5*p, 8*p, p);
+  // 桶
+  ctx.fillStyle = '#885522';
+  ctx.fillRect(x+2*p, groundY-9*p, 6*p, 7*p);
+  ctx.fillStyle = '#44aaff';
+  ctx.fillRect(x+3*p, groundY-7*p, 4*p, 4*p);
+}
+
+// --- お台場（レインボーブリッジ）---
+function drawRainbowBridge(x, groundY) {
+  const p = PX;
+  // 橋脚
+  ctx.fillStyle = '#888899';
+  ctx.fillRect(x-14*p, groundY-15*p, 3*p, 15*p);
+  ctx.fillRect(x+11*p, groundY-15*p, 3*p, 15*p);
+  // 橋のアーチワイヤー（虹色）
+  const rainbowCols = ['#ff0000','#ff8800','#ffff00','#00cc00','#0066ff','#8800cc'];
+  rainbowCols.forEach((c,i) => {
+    ctx.strokeStyle = c;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, groundY-15*p, (12+i)*p, Math.PI, 2*Math.PI);
+    ctx.stroke();
+  });
+  // 橋桁
+  ctx.fillStyle = '#666677';
+  ctx.fillRect(x-15*p, groundY-3*p, 30*p, 3*p);
+  // 海
+  ctx.fillStyle = '#2255aa';
+  ctx.fillRect(x-15*p, groundY, 30*p, 4*p);
+}
+
+// --- 港・倉庫（赤レンガ） ---
+function drawRedBrick(x, groundY) {
+  const p = PX;
+  // 建物本体
+  ctx.fillStyle = '#993322';
+  ctx.fillRect(x-13*p, groundY-18*p, 28*p, 18*p);
+  // レンガ模様
+  ctx.fillStyle = '#772211';
+  for (let row = 0; row < 5; row++) {
+    const offset = row % 2 === 0 ? 0 : 3*p;
+    for (let col = 0; col < 5; col++) {
+      ctx.fillRect(x-12*p + col*6*p + offset, groundY-(4+row*3)*p, 5*p, 2*p);
+    }
+  }
+  // 窓（アーチ型）
+  ctx.fillStyle = '#aaccff';
+  [[x-9*p, groundY-15*p],[x-p, groundY-15*p],[x+7*p, groundY-15*p]].forEach(([wx,wy]) => {
+    ctx.fillRect(wx, wy+2*p, 4*p, 5*p);
+    drawCircle(wx+2*p, wy+2*p, 2*p, '#aaccff');
+  });
+}
+
+// --- 成田空港 ---
+function drawAirportTerminal(x, groundY) {
+  const p = PX;
+  // ターミナルビル
+  ctx.fillStyle = '#e0e8f0';
+  ctx.fillRect(x-14*p, groundY-14*p, 30*p, 14*p);
+  // 屋根（緩やかなカーブ）
+  ctx.fillStyle = '#c0c8d0';
+  ctx.fillRect(x-15*p, groundY-16*p, 32*p, 3*p);
+  // 大きな窓（全面ガラス張り）
+  ctx.fillStyle = '#88ccff';
+  ctx.fillRect(x-12*p, groundY-12*p, 26*p, 8*p);
+  ctx.fillStyle = '#66aaee';
+  for (let i = 0; i < 5; i++) ctx.fillRect(x-11*p+i*6*p, groundY-12*p, p, 8*p);
+  // 飛行機シルエット
+  ctx.fillStyle = '#ccccdd';
+  ctx.fillRect(x+10*p, groundY-22*p, 16*p, 4*p);
+  ctx.fillRect(x+16*p, groundY-26*p, 10*p, 3*p);
+  ctx.fillRect(x+16*p, groundY-18*p, 10*p, 3*p);
+  ctx.fillRect(x+10*p, groundY-22*p, 4*p, 4*p);
+}
+
+// --- 鎌倉大仏 ---
+function drawBuddha(x, groundY) {
+  const p = PX;
+  // 台座
+  ctx.fillStyle = '#888870';
+  ctx.fillRect(x-8*p, groundY-5*p, 16*p, 5*p);
+  // 体
+  ctx.fillStyle = '#778866';
+  ctx.fillRect(x-6*p, groundY-20*p, 12*p, 15*p);
+  // 肩
+  ctx.fillRect(x-8*p, groundY-18*p, 4*p, 6*p);
+  ctx.fillRect(x+4*p, groundY-18*p, 4*p, 6*p);
+  // 頭
+  drawCircle(x, groundY-22*p, 6*p, '#778866');
+  // 螺髪（頭のぼこぼこ）
+  ctx.fillStyle = '#556655';
+  [[-3,-1],[0,-2],[3,-1],[-2,-3],[2,-3],[0,-4]].forEach(([dx,dy]) =>
+    drawCircle(x+dx*p, groundY-(22+dy)*p, p, '#556655'));
+  // 顔パーツ
+  ctx.fillStyle = '#556655';
+  ctx.fillRect(x-2*p, groundY-24*p, p, p);
+  ctx.fillRect(x+p, groundY-24*p, p, p);
+  ctx.fillRect(x-p, groundY-22*p, 2*p, p);
+}
+
+// --- 灯台 ---
+function drawLighthouse(x, groundY) {
+  const p = PX;
+  // 塔
+  for (let i = 0; i < 20; i++) {
+    ctx.fillStyle = i%4 < 2 ? '#ffffff' : '#cc2200';
+    ctx.fillRect(x-3*p, groundY-(i+1)*p, 6*p, p);
+  }
+  // 灯室
+  ctx.fillStyle = '#ffff44';
+  drawCircle(x, groundY-22*p, 4*p, '#ffff44');
+  ctx.fillStyle = '#888800';
+  ctx.fillRect(x-4*p, groundY-24*p, 8*p, 2*p);
+  // 光線
+  ctx.strokeStyle = 'rgba(255,255,100,0.4)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(x, groundY-22*p); ctx.lineTo(x+30*p, groundY-30*p); ctx.stroke();
+}
+
+// --- ビーチ（湘南） ---
+function drawBeach(x, groundY) {
+  const p = PX;
+  // 海（水平線）
+  ctx.fillStyle = '#2266cc';
+  ctx.fillRect(x-15*p, groundY-8*p, 32*p, 8*p);
+  ctx.fillStyle = '#44aaff';
+  ctx.fillRect(x-15*p, groundY-4*p, 32*p, 2*p);
+  // 砂浜
+  ctx.fillStyle = '#eecc88';
+  ctx.fillRect(x-15*p, groundY-2*p, 32*p, 2*p);
+  // サーファー
+  ctx.fillStyle = '#ffcc88'; ctx.fillRect(x-2*p, groundY-14*p, 3*p, 3*p);
+  ctx.fillStyle = '#ff4444'; ctx.fillRect(x-2*p, groundY-11*p, 3*p, 5*p);
+  ctx.fillStyle = '#884400'; ctx.fillRect(x-4*p, groundY-8*p, 7*p, 2*p); // ボード
+  // 波
+  ctx.strokeStyle = '#88ccff';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x+8*p, groundY-5*p, 5*p, Math.PI, 0); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x-6*p, groundY-6*p, 4*p, Math.PI, 0); ctx.stroke();
+}
+
+// --- 温泉 ---
+function drawOnsen(x, groundY) {
+  const p = PX;
+  // 温泉の湯船（岩風呂）
+  ctx.fillStyle = '#888877';
+  ctx.fillRect(x-12*p, groundY-6*p, 26*p, 6*p);
+  ctx.fillRect(x-14*p, groundY-8*p, 3*p, 8*p);
+  ctx.fillRect(x+11*p, groundY-8*p, 3*p, 8*p);
+  // お湯（青白）
+  ctx.fillStyle = '#aaeeff';
+  ctx.fillRect(x-11*p, groundY-5*p, 24*p, 4*p);
+  // 湯気×3
+  for (let i = 0; i < 3; i++) {
+    ctx.strokeStyle = 'rgba(200,240,255,0.8)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const sx = x - 6*p + i*6*p;
+    ctx.moveTo(sx, groundY-6*p);
+    ctx.bezierCurveTo(sx-3*p, groundY-10*p, sx+3*p, groundY-14*p, sx, groundY-18*p);
+    ctx.stroke();
+  }
+  // のれん
+  ctx.fillStyle = '#cc2200';
+  ctx.fillRect(x-5*p, groundY-22*p, 12*p, 2*p);
+  ctx.fillStyle = '#fff';
+  [0,3,6,9].forEach(dx => ctx.fillRect(x-5*p+dx*p, groundY-20*p, 2*p, 5*p));
+}
+
+// --- 日光東照宮 ---
+function drawNikko(x, groundY) {
+  const p = PX;
+  // 豪華な本殿（金装飾）
+  ctx.fillStyle = '#884400';
+  ctx.fillRect(x-12*p, groundY-16*p, 26*p, 16*p);
+  // 金の装飾
+  ctx.fillStyle = '#ffcc00';
+  ctx.fillRect(x-12*p, groundY-16*p, 26*p, 2*p);
+  ctx.fillRect(x-12*p, groundY-10*p, 26*p, 2*p);
+  // 屋根（反り屋根）
+  ctx.fillStyle = '#336622';
+  ctx.fillRect(x-14*p, groundY-18*p, 30*p, 3*p);
+  ctx.fillRect(x-12*p, groundY-20*p, 26*p, 2*p);
+  // 柱
+  ctx.fillStyle = '#cc3300';
+  for (let i = 0; i < 5; i++) ctx.fillRect(x-10*p+i*5*p, groundY-14*p, 2*p, 14*p);
+  // 金の猿？（見ざる言わざる聞かざる）
+  ctx.fillStyle = '#ffcc88';
+  [x-8*p, x, x+8*p].forEach(sx => drawCircle(sx, groundY-22*p, 2*p, '#ffcc88'));
+}
+
+// --- 工場（トヨタ） ---
+function drawFactory(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#99aaaa';
+  ctx.fillRect(x-14*p, groundY-12*p, 30*p, 12*p);
+  // 煙突×2
+  ctx.fillStyle = '#888898';
+  ctx.fillRect(x-8*p, groundY-22*p, 5*p, 10*p);
+  ctx.fillRect(x+4*p, groundY-20*p, 5*p, 8*p);
+  // 煙
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = `rgba(180,180,180,${0.5-i*0.15})`;
+    drawCircle(x-5*p, groundY-(24+i*3)*p, (3+i)*p, `rgba(180,180,180,${0.5-i*0.15})`);
+    drawCircle(x+7*p, groundY-(22+i*3)*p, (2+i)*p, `rgba(160,160,160,${0.5-i*0.15})`);
+  }
+  // シャッター
+  ctx.fillStyle = '#778899';
+  ctx.fillRect(x-4*p, groundY-9*p, 10*p, 9*p);
+  ctx.fillStyle = '#667788';
+  for (let i = 0; i < 5; i++) ctx.fillRect(x-4*p, groundY-(2+i*2)*p, 10*p, p);
+}
+
+// --- 水族館 ---
+function drawAquarium(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#002244';
+  ctx.fillRect(x-13*p, groundY-20*p, 28*p, 20*p);
+  // 大きな水槽窓
+  ctx.fillStyle = '#0088cc';
+  ctx.fillRect(x-11*p, groundY-18*p, 24*p, 14*p);
+  // 魚影
+  ctx.fillStyle = '#00ccff';
+  [[-4,-8],[4,-5],[-2,-3],[6,-10],[0,-12]].forEach(([dx,dy]) => {
+    ctx.fillRect(x+dx*p, groundY+dy*p, 4*p, 2*p);
+    ctx.fillRect(x+(dx-2)*p, groundY+(dy+1)*p, p, p);
+  });
+  // 気泡
+  ctx.fillStyle = 'rgba(200,240,255,0.5)';
+  [[-6,-5],[2,-10],[8,-7]].forEach(([dx,dy]) => drawCircle(x+dx*p, groundY+dy*p, p, 'rgba(200,240,255,0.5)'));
+  // 看板
+  ctx.fillStyle = '#0044aa';
+  ctx.fillRect(x-5*p, groundY-22*p, 12*p, 3*p);
+}
+
+// --- 竹林（嵐山） ---
+function drawBamboo(x, groundY) {
+  const p = PX;
+  const cols = ['#448833','#55aa44','#336622','#44aa33'];
+  for (let i = 0; i < 6; i++) {
+    const bx = x - 12*p + i*5*p;
+    ctx.fillStyle = cols[i % cols.length];
+    ctx.fillRect(bx, groundY-28*p, 2*p, 28*p);
+    // 節
+    ctx.fillStyle = '#336622';
+    [8,16,24].forEach(oy => ctx.fillRect(bx-p, groundY-oy*p, 4*p, p));
+    // 葉
+    ctx.fillStyle = cols[i%cols.length];
+    ctx.fillRect(bx-3*p, groundY-26*p, 6*p, 2*p);
+    ctx.fillRect(bx-2*p, groundY-20*p, 5*p, 2*p);
+  }
+}
+
+// --- 金閣寺 ---
+function drawKinkakuji(x, groundY) {
+  const p = PX;
+  // 池
+  ctx.fillStyle = '#2255aa';
+  ctx.fillRect(x-14*p, groundY-2*p, 30*p, 4*p);
+  ctx.fillStyle = '#3366cc';
+  ctx.fillRect(x-14*p, groundY-2*p, 30*p, p);
+  // 1階
+  ctx.fillStyle = '#cc9900';
+  ctx.fillRect(x-10*p, groundY-8*p, 22*p, 8*p);
+  // 2階（金色）
+  ctx.fillStyle = '#ffcc00';
+  ctx.fillRect(x-8*p, groundY-14*p, 18*p, 6*p);
+  // 3階（金色・小さい）
+  ctx.fillRect(x-6*p, groundY-19*p, 14*p, 5*p);
+  // 屋根（緑の反り屋根）
+  ctx.fillStyle = '#336600';
+  ctx.fillRect(x-11*p, groundY-9*p, 24*p, 2*p);
+  ctx.fillRect(x-9*p, groundY-15*p, 20*p, 2*p);
+  ctx.fillRect(x-7*p, groundY-20*p, 16*p, 2*p);
+  // 鳳凰（頂点）
+  ctx.fillStyle = '#ffcc00';
+  ctx.fillRect(x-p, groundY-23*p, 2*p, 3*p);
+  drawCircle(x, groundY-24*p, 2*p, '#ffcc00');
+  // 水面の反射
+  ctx.globalAlpha = 0.4;
+  ctx.fillStyle = '#ffcc00';
+  ctx.fillRect(x-8*p, groundY-p, 18*p, 3*p);
+  ctx.globalAlpha = 1;
+}
+
+// --- 奈良の鹿 ---
+function drawDeer(x, groundY) {
+  const p = PX;
+  // 鹿×2
+  [[x-8*p, '#cc8844', true],[x+6*p, '#bb7733', false]].forEach(([dx, color, big]) => {
+    const scale = big ? 1 : 0.8;
+    // 体
+    ctx.fillStyle = color;
+    ctx.fillRect(dx-3*p*scale, groundY-8*p, 8*p*scale, 5*p);
+    // 首・頭
+    ctx.fillRect(dx+2*p*scale, groundY-12*p, 3*p*scale, 5*p);
+    drawCircle(dx+3*p*scale+p, groundY-13*p, 3*p, color);
+    // 足
+    ctx.fillStyle = '#aa6622';
+    [-2,0,3,5].forEach(fx => ctx.fillRect(dx+fx*p*scale, groundY-4*p, p, 4*p));
+    // 角（雄のみ）
+    if (big) {
+      ctx.fillStyle = '#885522';
+      ctx.fillRect(dx+2*p, groundY-16*p, p, 3*p);
+      ctx.fillRect(dx+3*p, groundY-17*p, 2*p, p);
+      ctx.fillRect(dx+5*p, groundY-16*p, p, 3*p);
+    }
+  });
+  // せんべい
+  ctx.fillStyle = '#eebb88';
+  drawCircle(x+2*p, groundY-20*p, 4*p, '#eebb88');
+}
+
+// --- 道頓堀（グリコ看板） ---
+function drawDotonbori(x, groundY) {
+  const p = PX;
+  // ビル
+  ctx.fillStyle = '#222233';
+  ctx.fillRect(x-14*p, groundY-24*p, 30*p, 24*p);
+  // グリコ看板（ネオン）
+  ctx.fillStyle = '#ff4400';
+  ctx.fillRect(x-5*p, groundY-23*p, 12*p, 14*p);
+  // グリコの人（ゴール！）
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(x-p, groundY-21*p, 3*p, 4*p); // 体
+  drawCircle(x+p, groundY-22*p, 2*p, '#ffffff'); // 頭
+  ctx.fillRect(x-3*p, groundY-20*p, 2*p, 3*p); // 左腕
+  ctx.fillRect(x+3*p, groundY-21*p, 2*p, 2*p); // 右腕
+  // 川
+  ctx.fillStyle = '#1133aa';
+  ctx.fillRect(x-14*p, groundY, 30*p, 5*p);
+  ctx.fillStyle = '#2244bb';
+  ctx.fillRect(x-14*p, groundY, 30*p, 2*p);
+}
+
+// --- 城（名古屋・姫路・ディズニー） ---
+function drawCastle(x, groundY, wallColor='#f5f5ee', roofColor='#336633') {
+  const p = PX;
+  ctx.fillStyle = wallColor;
+  ctx.fillRect(x-12*p, groundY-18*p, 26*p, 18*p);
+  // 天守閣
+  ctx.fillRect(x-8*p, groundY-26*p, 18*p, 10*p);
+  ctx.fillRect(x-5*p, groundY-32*p, 12*p, 8*p);
+  // 屋根
+  ctx.fillStyle = roofColor;
+  ctx.fillRect(x-13*p, groundY-19*p, 28*p, 2*p);
+  ctx.fillRect(x-9*p, groundY-27*p, 20*p, 2*p);
+  ctx.fillRect(x-6*p, groundY-33*p, 14*p, 2*p);
+  // 鯱（しゃちほこ）
+  ctx.fillStyle = '#ffcc00';
+  ctx.fillRect(x-5*p, groundY-35*p, 2*p, 2*p);
+  ctx.fillRect(x+3*p, groundY-35*p, 2*p, 2*p);
+  // 窓
+  ctx.fillStyle = '#aaccff';
+  [[-6,-15],[-p,-15],[4,-15],[-6,-22],[-p,-22],[4,-22]].forEach(([dx,dy]) =>
+    ctx.fillRect(x+dx*p, groundY+dy*p, 3*p, 3*p));
+}
+
+// --- 砂丘（鳥取） ---
+function drawSandDune(x, groundY) {
+  const p = PX;
+  // 砂丘のシルエット
+  ctx.fillStyle = '#ddbb77';
+  ctx.beginPath();
+  ctx.moveTo(x-15*p, groundY);
+  ctx.quadraticCurveTo(x-5*p, groundY-20*p, x+5*p, groundY-22*p);
+  ctx.quadraticCurveTo(x+12*p, groundY-18*p, x+15*p, groundY);
+  ctx.fill();
+  ctx.fillStyle = '#ccaa66';
+  ctx.beginPath();
+  ctx.moveTo(x-8*p, groundY);
+  ctx.quadraticCurveTo(x, groundY-12*p, x+10*p, groundY);
+  ctx.fill();
+  // ラクダ（見えるかも）
+  ctx.fillStyle = '#cc9944';
+  ctx.fillRect(x+5*p, groundY-26*p, 5*p, 3*p);
+  ctx.fillRect(x+3*p, groundY-25*p, 3*p, p);
+  ctx.fillRect(x+8*p, groundY-25*p, 3*p, p);
+}
+
+// --- 原爆ドーム（広島） ---
+function drawDome(x, groundY) {
+  const p = PX;
+  // 建物廃墟
+  ctx.fillStyle = '#998877';
+  ctx.fillRect(x-12*p, groundY-18*p, 26*p, 18*p);
+  // ドーム骨格
+  ctx.strokeStyle = '#776655';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, groundY-18*p, 8*p, Math.PI, 0); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, groundY-18*p, 6*p, Math.PI, 0); ctx.stroke();
+  // 骨格の縦線
+  ctx.strokeStyle = '#776655';
+  ctx.lineWidth = 1;
+  [-6,-3,0,3,6].forEach(dx => {
+    ctx.beginPath();
+    ctx.moveTo(x+dx*p, groundY-18*p);
+    ctx.lineTo(x+dx*p, groundY-26*p);
+    ctx.stroke();
+  });
+  // 窓（崩れた）
+  ctx.fillStyle = '#557799';
+  ctx.fillRect(x-8*p, groundY-15*p, 3*p, 4*p);
+  ctx.fillRect(x+5*p, groundY-15*p, 3*p, 4*p);
+}
+
+// --- 丘の町（尾道・函館） ---
+function drawHillTown(x, groundY) {
+  const p = PX;
+  // 坂道
+  ctx.fillStyle = '#887755';
+  ctx.beginPath();
+  ctx.moveTo(x-15*p, groundY);
+  ctx.lineTo(x+5*p, groundY-15*p);
+  ctx.lineTo(x+15*p, groundY-15*p);
+  ctx.lineTo(x+15*p, groundY);
+  ctx.fill();
+  // 家々
+  [[x-10*p,groundY-8*p],[x-2*p,groundY-12*p],[x+8*p,groundY-16*p]].forEach(([hx,hy],i) => {
+    ctx.fillStyle = ['#eeddcc','#ddccbb','#ccbbaa'][i];
+    ctx.fillRect(hx, hy, 7*p, 7*p);
+    ctx.fillStyle = '#554433';
+    ctx.fillRect(hx-p, hy-3*p, 9*p, 3*p);
+  });
+  // 海
+  ctx.fillStyle = '#2255aa';
+  ctx.fillRect(x-15*p, groundY-3*p, 15*p, 3*p);
+}
+
+// --- カルスト台地（秋吉台） ---
+function drawKarst(x, groundY) {
+  const p = PX;
+  // 草地
+  ctx.fillStyle = '#55aa44';
+  ctx.fillRect(x-15*p, groundY-5*p, 32*p, 5*p);
+  // 石灰岩の岩（白）
+  [[x-8*p, 8], [x, 12], [x+8*p, 9], [x-3*p, 6]].forEach(([rx, h]) => {
+    ctx.fillStyle = '#e8e4dd';
+    ctx.fillRect(rx-2*p, groundY-(5+h)*p, 5*p, h*p);
+    ctx.fillRect(rx-3*p, groundY-(5+h/2|0)*p, 7*p, 3*p);
+  });
+}
+
+// --- ラーメン丼（福岡） ---
+function drawRamenBowl(x, groundY) {
+  const p = PX;
+  // 丼（楕円）
+  ctx.fillStyle = '#cc6622';
+  ctx.fillRect(x-10*p, groundY-8*p, 22*p, 8*p);
+  ctx.fillRect(x-12*p, groundY-4*p, 26*p, 3*p);
+  // スープ（白濁）
+  ctx.fillStyle = '#fff5e0';
+  ctx.fillRect(x-9*p, groundY-7*p, 20*p, 6*p);
+  // チャーシュー
+  ctx.fillStyle = '#cc4422';
+  drawCircle(x-2*p, groundY-5*p, 3*p, '#cc4422');
+  ctx.fillStyle = '#ffaa44';
+  drawCircle(x-2*p, groundY-5*p, 2*p, '#ffaa44');
+  // 麺（黄色の線）
+  ctx.strokeStyle = '#ffee88';
+  ctx.lineWidth = 1.5;
+  [[-5,-6],[2,-6],[-3,-4],[4,-4]].forEach(([dx,dy]) => {
+    ctx.beginPath(); ctx.moveTo(x+dx*p, groundY+dy*p); ctx.lineTo(x+(dx+4)*p, groundY+dy*p); ctx.stroke();
+  });
+  // ねぎ
+  ctx.fillStyle = '#44aa44';
+  ctx.fillRect(x+3*p, groundY-7*p, p, 4*p);
+  // 箸
+  ctx.strokeStyle = '#886644';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x+8*p, groundY-10*p); ctx.lineTo(x+6*p, groundY-2*p); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+11*p, groundY-10*p); ctx.lineTo(x+9*p, groundY-2*p); ctx.stroke();
+}
+
+// --- 異人館（長崎・神戸） ---
+function drawOldBuilding(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#eeddcc';
+  ctx.fillRect(x-11*p, groundY-20*p, 24*p, 20*p);
+  // 煉瓦風基礎
+  ctx.fillStyle = '#cc9966';
+  ctx.fillRect(x-11*p, groundY-5*p, 24*p, 5*p);
+  // コロニアル柱
+  ctx.fillStyle = '#f0ece0';
+  [-6,-2,2,6].forEach(dx => ctx.fillRect(x+dx*p, groundY-18*p, 2*p, 14*p));
+  // 三角屋根
+  ctx.fillStyle = '#884422';
+  ctx.beginPath();
+  ctx.moveTo(x-12*p, groundY-20*p); ctx.lineTo(x, groundY-28*p); ctx.lineTo(x+12*p, groundY-20*p); ctx.fill();
+  // 窓
+  ctx.fillStyle = '#aaddff';
+  [[-7,-17],[-p,-17],[5,-17],[-7,-11],[-p,-11],[5,-11]].forEach(([dx,dy]) =>
+    ctx.fillRect(x+dx*p, groundY+dy*p, 4*p, 5*p));
+}
+
+// --- 火山（阿蘇） ---
+function drawVolcano(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#665544';
+  ctx.beginPath();
+  ctx.moveTo(x-18*p, groundY); ctx.lineTo(x, groundY-30*p); ctx.lineTo(x+18*p, groundY); ctx.fill();
+  // カルデラ（口）
+  ctx.fillStyle = '#332211';
+  ctx.beginPath();
+  ctx.arc(x, groundY-30*p, 5*p, 0, Math.PI*2); ctx.fill();
+  // マグマ
+  ctx.fillStyle = '#ff4400';
+  ctx.beginPath();
+  ctx.arc(x, groundY-30*p, 3*p, 0, Math.PI*2); ctx.fill();
+  // 噴煙
+  for (let i = 0; i < 4; i++) {
+    const alpha = 0.6 - i*0.12;
+    ctx.fillStyle = `rgba(150,150,150,${alpha})`;
+    drawCircle(x + (i%2===0 ? -i*p : i*p), groundY-(32+i*4)*p, (3+i)*p, `rgba(150,150,150,${alpha})`);
+  }
+  // 溶岩流
+  ctx.fillStyle = '#cc3300';
+  ctx.fillRect(x-3*p, groundY-28*p, 3*p, 8*p);
+  ctx.fillRect(x-5*p, groundY-22*p, 5*p, 4*p);
+}
+
+// --- 縄文杉（屋久島） ---
+function drawAncientTree(x, groundY) {
+  const p = PX;
+  // 幹（太い）
+  ctx.fillStyle = '#5a3a1a';
+  ctx.fillRect(x-5*p, groundY-30*p, 10*p, 30*p);
+  // 根っこ
+  ctx.fillRect(x-9*p, groundY-5*p, 4*p, 5*p);
+  ctx.fillRect(x+5*p, groundY-5*p, 4*p, 5*p);
+  // 樹皮のテクスチャ
+  ctx.fillStyle = '#4a2a0a';
+  [8,14,20,26].forEach(oy => ctx.fillRect(x-4*p, groundY-oy*p, 8*p, 2*p));
+  // 葉（深緑）
+  [[x-4*p,25],[x-8*p,18],[x+4*p,18],[x-2*p,14],[x,10],[x-6*p,12],[x+6*p,10]].forEach(([lx,oy]) => {
+    const r = (3 + Math.random()*2)|0;
+    drawCircle(lx, groundY-oy*p, r*p, '#1a5522');
+  });
+  drawCircle(x, groundY-32*p, 5*p, '#1a5522');
+}
+
+// --- 渦潮（鳴門） ---
+function drawWhirlpool(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#1144aa';
+  ctx.fillRect(x-15*p, groundY-8*p, 32*p, 8*p);
+  // 渦
+  ctx.strokeStyle = '#44aaff';
+  ctx.lineWidth = 2;
+  [6,10,14].forEach(r => {
+    ctx.beginPath(); ctx.arc(x, groundY-5*p, r*p, 0, Math.PI*1.8); ctx.stroke();
+  });
+  ctx.fillStyle = '#88ccff';
+  drawCircle(x, groundY-5*p, 3*p, '#88ccff');
+  // 観光船
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(x+8*p, groundY-5*p, 8*p, 3*p);
+  ctx.fillRect(x+10*p, groundY-8*p, 4*p, 3*p);
+}
+
+// --- 雪景色（札幌） ---
+function drawSnowScene(x, groundY) {
+  const p = PX;
+  // 雪の積もった建物（時計台）
+  ctx.fillStyle = '#cc2200';
+  ctx.fillRect(x-8*p, groundY-24*p, 18*p, 5*p); // 屋根
+  ctx.fillStyle = '#f5f5f5';
+  ctx.fillRect(x-7*p, groundY-19*p, 16*p, 12*p); // 壁
+  ctx.fillRect(x-6*p, groundY-26*p, 14*p, 3*p); // 雪
+  // 時計
+  drawCircle(x+p, groundY-16*p, 4*p, '#ddddcc');
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x+p, groundY-16*p); ctx.lineTo(x+p, groundY-19*p); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+p, groundY-16*p); ctx.lineTo(x+3*p, groundY-16*p); ctx.stroke();
+  // 雪
+  ctx.fillStyle = '#eeeeff';
+  [[-12,0],[-5,-2],[3,-4],[9,-1],[-8,-6]].forEach(([dx,dy]) =>
+    drawCircle(x+dx*p, groundY+dy*p, 3*p, '#eeeeff'));
+  // 塔
+  ctx.fillStyle = '#333344';
+  ctx.fillRect(x+8*p, groundY-32*p, 4*p, 14*p);
+  ctx.fillStyle = '#cc2200';
+  ctx.beginPath(); ctx.moveTo(x+8*p,groundY-32*p); ctx.lineTo(x+10*p,groundY-36*p); ctx.lineTo(x+12*p,groundY-32*p); ctx.fill();
+}
+
+// --- ラベンダー畑（富良野） ---
+function drawLavender(x, groundY) {
+  const p = PX;
+  // 緑の丘
+  ctx.fillStyle = '#55aa44';
+  ctx.fillRect(x-15*p, groundY-8*p, 32*p, 8*p);
+  // ラベンダーの列（紫）
+  const purples = ['#8844cc','#aa66ee','#9955dd','#7733bb'];
+  for (let row = 0; row < 4; row++) {
+    ctx.fillStyle = purples[row];
+    for (let col = 0; col < 8; col++) {
+      const lx = x - 14*p + col*4*p;
+      const ly = groundY - (2+row*2)*p;
+      ctx.fillRect(lx, ly, 2*p, 2*p);
+      ctx.fillRect(lx-p, ly+p, 4*p, p);
+    }
+  }
+}
+
+// --- 森（知床） ---
+function drawForest(x, groundY) {
+  const p = PX;
+  const treeCols = ['#1a6622','#226633','#184422','#2a7733'];
+  for (let i = 0; i < 6; i++) {
+    const tx = x - 13*p + i*5*p;
+    const h = 18 + (i%3)*4;
+    // 幹
+    ctx.fillStyle = '#5a3a1a';
+    ctx.fillRect(tx+p, groundY-6*p, 2*p, 6*p);
+    // 三角の木
+    ctx.fillStyle = treeCols[i%4];
+    ctx.beginPath();
+    ctx.moveTo(tx, groundY-8*p); ctx.lineTo(tx+2*p, groundY-h*p); ctx.lineTo(tx+4*p, groundY-8*p); ctx.fill();
+    ctx.fillRect(tx-p, groundY-12*p, 6*p, 4*p);
+  }
+  // 雪冠（少し）
+  ctx.fillStyle = 'rgba(220,230,255,0.8)';
+  for (let i = 0; i < 6; i++) {
+    const tx = x - 13*p + i*5*p;
+    const h = 18 + (i%3)*4;
+    ctx.fillRect(tx, groundY-h*p, 4*p, 2*p);
+  }
+}
+
+// --- シーサー（沖縄） ---
+function drawShisa(x, groundY) {
+  const p = PX;
+  // 台座
+  ctx.fillStyle = '#cc8844';
+  ctx.fillRect(x-7*p, groundY-4*p, 14*p, 4*p);
+  // 体
+  ctx.fillStyle = '#ee9944';
+  ctx.fillRect(x-5*p, groundY-14*p, 12*p, 10*p);
+  // 頭
+  drawCircle(x, groundY-16*p, 6*p, '#ee9944');
+  // たてがみ
+  ctx.fillStyle = '#cc6600';
+  [[-5,-16],[-6,-13],[-6,-10],[-3,-10],[3,-10],[6,-13],[6,-16],[5,-16]].forEach(([dx,dy]) =>
+    drawCircle(x+dx*p, groundY+dy*p, 2*p, '#cc6600'));
+  // 目
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x-3*p, groundY-18*p, 2*p, 2*p);
+  ctx.fillRect(x+p, groundY-18*p, 2*p, 2*p);
+  ctx.fillStyle = '#ff4400';
+  ctx.fillRect(x+p, groundY-18*p, p, p);
+  ctx.fillRect(x-3*p, groundY-18*p, p, p);
+  // 口（大きく開いた）
+  ctx.fillStyle = '#cc2200';
+  ctx.fillRect(x-3*p, groundY-15*p, 6*p, 2*p);
+  ctx.fillStyle = '#ff8888';
+  ctx.fillRect(x-2*p, groundY-14*p, 4*p, p);
+}
+
+// --- 熱帯ビーチ（沖縄・ハワイ） ---
+function drawTropicalBeach(x, groundY) {
+  const p = PX;
+  // 海（エメラルドグリーン）
+  ctx.fillStyle = '#00aacc';
+  ctx.fillRect(x-15*p, groundY-10*p, 32*p, 10*p);
+  ctx.fillStyle = '#22ccee';
+  ctx.fillRect(x-15*p, groundY-5*p, 32*p, 2*p);
+  // 砂浜
+  ctx.fillStyle = '#ffeeaa';
+  ctx.fillRect(x-15*p, groundY-2*p, 32*p, 2*p);
+  // ヤシの木
+  ctx.fillStyle = '#774400';
+  ctx.fillRect(x+5*p, groundY-16*p, 2*p, 16*p);
+  // ヤシの葉
+  ctx.fillStyle = '#33aa22';
+  [[-10,-1],[-6,-3],[-2,-5],[2,-3],[6,-2]].forEach(([dx,dy]) => {
+    ctx.fillRect(x+5*p, groundY-15*p, dx*p, p);
+    ctx.fillRect(x+5*p, groundY-16*p+dy*p, p, Math.abs(dy)*p);
+  });
+  // ヤシの実
+  drawCircle(x+5*p, groundY-15*p, 2*p, '#cc8800');
+  // 波
+  ctx.strokeStyle = '#88eeff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x-5*p, groundY-8*p, 4*p, Math.PI, 0); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x+5*p, groundY-7*p, 3*p, Math.PI, 0); ctx.stroke();
+}
+
+// --- ハリウッド ---
+function drawHollywood(x, groundY) {
+  const p = PX;
+  // 丘
+  ctx.fillStyle = '#998855';
+  ctx.beginPath(); ctx.moveTo(x-15*p, groundY); ctx.lineTo(x, groundY-18*p); ctx.lineTo(x+15*p, groundY); ctx.fill();
+  // HOLLYWOODサイン（白い看板）
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < 9; i++) {
+    ctx.fillRect(x-13*p+i*3*p, groundY-18*p, 2*p, 6*p);
+  }
+  // 撮影用カメラ
+  ctx.fillStyle = '#333';
+  ctx.fillRect(x-5*p, groundY-8*p, 8*p, 5*p);
+  ctx.fillStyle = '#666';
+  drawCircle(x-p, groundY-6*p, 2*p, '#666');
+  ctx.fillStyle = '#334';
+  ctx.fillRect(x+3*p, groundY-7*p, 4*p, 2*p);
+}
+
+// --- ラスベガス ---
+function drawVegas(x, groundY) {
+  const p = PX;
+  // 砂漠の空
+  ctx.fillStyle = '#223355';
+  ctx.fillRect(x-15*p, groundY-28*p, 32*p, 28*p);
+  // カジノビル群
+  const neonColors = ['#ff0088','#00ffff','#ffff00','#ff4400','#8800ff'];
+  for (let i = 0; i < 5; i++) {
+    const bx = x - 13*p + i*6*p;
+    const bh = 12 + (i%3)*6;
+    ctx.fillStyle = '#222233';
+    ctx.fillRect(bx, groundY-bh*p, 5*p, bh*p);
+    // ネオンサイン
+    ctx.fillStyle = neonColors[i];
+    ctx.fillRect(bx, groundY-bh*p, 5*p, 2*p);
+    ctx.fillRect(bx, groundY-(bh/2|0)*p, 5*p, p);
+  }
+  // 地面のネオン
+  ctx.fillStyle = '#331122';
+  ctx.fillRect(x-15*p, groundY-2*p, 32*p, 2*p);
+  neonColors.forEach((c,i) => {
+    ctx.fillStyle = c;
+    ctx.fillRect(x-14*p+i*6*p, groundY-p, 4*p, p);
+  });
+}
+
+// --- 自由の女神（NY） ---
+function drawStatueOfLiberty(x, groundY) {
+  const p = PX;
+  // 台座
+  ctx.fillStyle = '#7a9a8a';
+  ctx.fillRect(x-6*p, groundY-8*p, 14*p, 8*p);
+  // 体
+  ctx.fillStyle = '#88aa99';
+  ctx.fillRect(x-4*p, groundY-18*p, 10*p, 12*p);
+  // 頭・冠
+  drawCircle(x+p, groundY-20*p, 4*p, '#88aa99');
+  ctx.fillStyle = '#99bbaa';
+  ctx.fillRect(x-2*p, groundY-24*p, 8*p, 2*p);
+  // 棘（冠）
+  ctx.fillStyle = '#99bbaa';
+  [-2,0,2,4,6].forEach(dx => {
+    ctx.fillRect(x+dx*p, groundY-26*p, p, 2*p);
+  });
+  // たいまつ（腕）
+  ctx.fillStyle = '#99bbaa';
+  ctx.fillRect(x+4*p, groundY-24*p, 2*p, 8*p);
+  ctx.fillStyle = '#ffcc00';
+  drawCircle(x+5*p, groundY-25*p, 3*p, '#ffcc00');
+  // 水面
+  ctx.fillStyle = '#1133aa';
+  ctx.fillRect(x-15*p, groundY-2*p, 32*p, 2*p);
+}
+
+// --- マチュピチュ ---
+function drawMachuPicchu(x, groundY) {
+  const p = PX;
+  // 緑の山
+  ctx.fillStyle = '#226633';
+  ctx.beginPath(); ctx.moveTo(x-15*p, groundY); ctx.lineTo(x-5*p, groundY-20*p); ctx.lineTo(x+5*p, groundY-18*p); ctx.lineTo(x+15*p, groundY); ctx.fill();
+  // 石造りの段々（テラス）
+  ctx.fillStyle = '#ccbbaa';
+  for (let i = 0; i < 5; i++) {
+    ctx.fillRect(x-12*p+i*p, groundY-(4+i*3)*p, (24-i*2)*p, 2*p);
+    ctx.fillStyle = '#aaa099';
+    ctx.fillRect(x-12*p+i*p, groundY-(6+i*3)*p, (24-i*2)*p, 2*p);
+    ctx.fillStyle = '#ccbbaa';
+  }
+  // 建物
+  ctx.fillStyle = '#bbaa99';
+  ctx.fillRect(x-4*p, groundY-18*p, 10*p, 6*p);
+  ctx.fillStyle = '#886655';
+  ctx.fillRect(x-4*p, groundY-20*p, 10*p, 2*p);
+}
+
+// --- コルコバード（リオ） ---
+function drawRio(x, groundY) {
+  const p = PX;
+  // 山
+  ctx.fillStyle = '#336622';
+  ctx.beginPath(); ctx.moveTo(x-10*p, groundY); ctx.lineTo(x, groundY-25*p); ctx.lineTo(x+10*p, groundY); ctx.fill();
+  // 十字架の人（キリスト像）
+  ctx.fillStyle = '#f0ece0';
+  ctx.fillRect(x-p, groundY-32*p, 2*p, 7*p); // 体
+  drawCircle(x, groundY-33*p, 2*p, '#f0ece0'); // 頭
+  ctx.fillRect(x-5*p, groundY-30*p, 10*p, 2*p); // 両腕
+  // ビーチ
+  ctx.fillStyle = '#ffeeaa';
+  ctx.fillRect(x-14*p, groundY-2*p, 30*p, 2*p);
+  ctx.fillStyle = '#2266cc';
+  ctx.fillRect(x-14*p, groundY-4*p, 30*p, 2*p);
+}
+
+// --- ビッグベン（ロンドン） ---
+function drawBigBen(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#aaa488';
+  ctx.fillRect(x-5*p, groundY-30*p, 12*p, 30*p);
+  // 時計塔の上
+  ctx.fillRect(x-6*p, groundY-32*p, 14*p, 3*p);
+  ctx.fillStyle = '#886644';
+  ctx.beginPath(); ctx.moveTo(x-6*p,groundY-32*p); ctx.lineTo(x+p,groundY-40*p); ctx.lineTo(x+8*p,groundY-32*p); ctx.fill();
+  // 尖塔
+  ctx.fillStyle = '#665533';
+  ctx.fillRect(x-p, groundY-42*p, 4*p, 4*p);
+  ctx.fillRect(x, groundY-44*p, 2*p, 2*p);
+  // 時計
+  drawCircle(x+p, groundY-22*p, 4*p, '#c8b870');
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x+p,groundY-22*p); ctx.lineTo(x+p,groundY-25*p); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+p,groundY-22*p); ctx.lineTo(x+3*p,groundY-22*p); ctx.stroke();
+  // ウェストミンスター橋
+  ctx.fillStyle = '#888888';
+  ctx.fillRect(x-14*p, groundY-3*p, 30*p, 3*p);
+  ctx.fillStyle = '#1133aa';
+  ctx.fillRect(x-14*p, groundY, 30*p, 3*p);
+}
+
+// --- エッフェル塔（パリ） ---
+function drawEiffelTower(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#886644';
+  // 脚×4（台形）
+  ctx.fillRect(x-10*p, groundY-8*p, 3*p, 8*p);
+  ctx.fillRect(x+7*p,  groundY-8*p, 3*p, 8*p);
+  ctx.fillRect(x-6*p,  groundY-8*p, 2*p, 6*p);
+  ctx.fillRect(x+4*p,  groundY-8*p, 2*p, 6*p);
+  // 第1展望台
+  ctx.fillRect(x-6*p, groundY-12*p, 14*p, 2*p);
+  // 第2展望台（細くなる）
+  ctx.fillRect(x-4*p, groundY-18*p, 10*p, p);
+  ctx.fillRect(x-4*p, groundY-20*p, 10*p, 2*p);
+  // 上部（細い）
+  ctx.fillRect(x-2*p, groundY-28*p, 6*p, 8*p);
+  ctx.fillRect(x-p,   groundY-32*p, 4*p, 4*p);
+  // アンテナ
+  ctx.fillRect(x, groundY-36*p, 2*p, 4*p);
+  // セーヌ川
+  ctx.fillStyle = '#2255aa';
+  ctx.fillRect(x-14*p, groundY-2*p, 30*p, 2*p);
+}
+
+// --- コロッセオ（ローマ） ---
+function drawColosseum(x, groundY) {
+  const p = PX;
+  ctx.fillStyle = '#bb9966';
+  ctx.fillRect(x-14*p, groundY-18*p, 30*p, 18*p);
+  // 楕円形の開口部
+  ctx.fillStyle = '#332211';
+  for (let i = 0; i < 8; i++) {
+    ctx.fillRect(x-12*p+i*4*p, groundY-16*p, 2*p, 8*p);
+    // 上部アーチ
+    drawCircle(x-11*p+i*4*p, groundY-16*p, p, '#332211');
+  }
+  // 外縁のアーチ（上段）
+  ctx.fillStyle = '#aa8855';
+  ctx.fillRect(x-14*p, groundY-10*p, 30*p, 2*p);
+  ctx.fillRect(x-14*p, groundY-4*p,  30*p, 2*p);
+  // 中の闘技場
+  ctx.fillStyle = '#ccaa77';
+  ctx.fillRect(x-10*p, groundY-14*p, 22*p, 8*p);
+  ctx.fillStyle = '#aa8844';
+  ctx.fillRect(x-8*p, groundY-13*p, 18*p, 4*p);
+}
+
+// --- サグラダファミリア ---
+function drawSagrada(x, groundY) {
+  const p = PX;
+  // 本体
+  ctx.fillStyle = '#cc9966';
+  ctx.fillRect(x-10*p, groundY-20*p, 22*p, 20*p);
+  // 尖塔×4（不均一）
+  [[x-9*p, 36],[x-3*p, 38],[x+3*p, 35],[x+9*p, 33]].forEach(([tx, h]) => {
+    ctx.fillStyle = '#ddaa77';
+    ctx.fillRect(tx, groundY-h*p, 4*p, h-20);
+    ctx.fillStyle = '#cc8855';
+    ctx.beginPath(); ctx.moveTo(tx,groundY-h*p); ctx.lineTo(tx+2*p,groundY-(h+8)*p); ctx.lineTo(tx+4*p,groundY-h*p); ctx.fill();
+  });
+  // 窓（花窓ガラス）
+  ctx.fillStyle = '#ffaa44';
+  drawCircle(x+p, groundY-16*p, 4*p, '#ffaa44');
+  ctx.fillStyle = '#ff6600';
+  drawCircle(x+p, groundY-16*p, 2*p, '#ff6600');
+}
+
+// --- 風車（アムステルダム） ---
+function drawWindmill(x, groundY) {
+  const p = PX;
+  // 塔
+  ctx.fillStyle = '#cc8844';
+  ctx.fillRect(x-4*p, groundY-20*p, 10*p, 20*p);
+  // 窓
+  ctx.fillStyle = '#88aacc';
+  ctx.fillRect(x-2*p, groundY-16*p, 4*p, 4*p);
+  ctx.fillRect(x-2*p, groundY-9*p, 4*p, 4*p);
+  // 風車の羽（4枚）
+  ctx.fillStyle = '#887755';
+  [[0,-20],[8,-10],[2,0],[-6,-10]].forEach(([dx,dy]) =>
+    ctx.fillRect(x+dx*p, groundY+dy*p, 3*p, 10*p));
+  // 運河
+  ctx.fillStyle = '#2244aa';
+  ctx.fillRect(x-14*p, groundY-3*p, 30*p, 3*p);
+  ctx.fillStyle = '#3355bb';
+  ctx.fillRect(x-14*p, groundY-p, 30*p, p);
+  // チューリップ
+  ['#ff2244','#ff8800','#ffee00'].forEach((c,i) => {
+    const fx = x - 10*p + i*4*p;
+    ctx.fillStyle = '#44aa44'; ctx.fillRect(fx, groundY-6*p, p, 6*p);
+    drawCircle(fx, groundY-7*p, 2*p, c);
+  });
+}
+
+// --- サントリーニ島 ---
+function drawSantorini(x, groundY) {
+  const p = PX;
+  // 断崖（茶色）
+  ctx.fillStyle = '#cc9966';
+  ctx.beginPath(); ctx.moveTo(x-15*p, groundY); ctx.lineTo(x-10*p, groundY-20*p); ctx.lineTo(x+15*p, groundY-20*p); ctx.lineTo(x+15*p, groundY); ctx.fill();
+  // 白い建物
+  ctx.fillStyle = '#ffffff';
+  [[x-8*p,18],[x-2*p,20],[x+4*p,17]].forEach(([bx,h]) => {
+    ctx.fillRect(bx, groundY-h*p, 8*p, h-20+20);
+    // 青いドーム
+    ctx.fillStyle = '#1155cc';
+    drawCircle(bx+4*p, groundY-h*p, 4*p, '#1155cc');
+    ctx.fillStyle = '#ffffff';
+  });
+  // エーゲ海
+  ctx.fillStyle = '#2266cc';
+  ctx.fillRect(x-15*p, groundY-3*p, 30*p, 3*p);
+}
+
+// --- ブルジュハリファ（ドバイ） ---
+function drawBurj(x, groundY) {
+  const p = PX;
+  // 超高層ビル（細く、とても高い）
+  for (let i = 0; i < 50; i++) {
+    const w = Math.max(1, 7 - i/8) | 0;
+    ctx.fillStyle = i%2===0 ? '#99aabb' : '#aabbcc';
+    ctx.fillRect(x - w*p/2, groundY-(i+1)*p, w*p, p);
+  }
+  // 尖塔
+  ctx.fillStyle = '#bbccdd';
+  ctx.fillRect(x-p, groundY-52*p, 2*p, 4*p);
+  // 砂漠の地面
+  ctx.fillStyle = '#ddbb77';
+  ctx.fillRect(x-15*p, groundY-2*p, 30*p, 2*p);
+  // 噴水（有名）
+  ctx.strokeStyle = '#44aaff';
+  ctx.lineWidth = 1.5;
+  [-8,-4,0,4,8].forEach(dx => {
+    ctx.beginPath();
+    ctx.moveTo(x+dx*p, groundY-2*p);
+    ctx.quadraticCurveTo(x+dx*p-3*p, groundY-10*p, x+dx*p+3*p, groundY-8*p);
+    ctx.stroke();
+  });
+}
+
+// --- ピラミッド ---
+function drawPyramids(x, groundY) {
+  const p = PX;
+  // 大ピラミッド
+  ctx.fillStyle = '#ccbb88';
+  ctx.beginPath(); ctx.moveTo(x-14*p, groundY); ctx.lineTo(x, groundY-22*p); ctx.lineTo(x+14*p, groundY); ctx.fill();
+  ctx.fillStyle = '#bbaa77';
+  ctx.beginPath(); ctx.moveTo(x-p, groundY-22*p); ctx.lineTo(x+14*p, groundY); ctx.lineTo(x+8*p, groundY); ctx.fill();
+  // 小ピラミッド
+  ctx.fillStyle = '#ccbb88';
+  ctx.beginPath(); ctx.moveTo(x+10*p, groundY); ctx.lineTo(x+18*p, groundY-12*p); ctx.lineTo(x+26*p, groundY); ctx.fill();
+  // スフィンクス
+  ctx.fillStyle = '#ddcc99';
+  ctx.fillRect(x-16*p, groundY-5*p, 8*p, 3*p); // 体
+  drawCircle(x-10*p, groundY-7*p, 3*p, '#ddcc99'); // 頭
+  // 砂漠
+  ctx.fillStyle = '#eecc88';
+  ctx.fillRect(x-18*p, groundY-p, 36*p, p);
+}
+
+// --- タージマハル ---
+function drawTajMahal(x, groundY) {
+  const p = PX;
+  // 本体
+  ctx.fillStyle = '#f5f0ec';
+  ctx.fillRect(x-10*p, groundY-18*p, 22*p, 18*p);
+  // 中央ドーム
+  ctx.fillStyle = '#f5f0ec';
+  drawCircle(x+p, groundY-18*p, 7*p, '#f5f0ec');
+  // 小ドーム×2
+  drawCircle(x-6*p, groundY-18*p, 3*p, '#f5f0ec');
+  drawCircle(x+8*p, groundY-18*p, 3*p, '#f5f0ec');
+  // ミナレット（4本）
+  ctx.fillStyle = '#f0ece8';
+  [x-12*p, x+12*p].forEach(mx => {
+    ctx.fillRect(mx-p, groundY-22*p, 3*p, 22*p);
+    drawCircle(mx+p, groundY-23*p, 3*p, '#f0ece8');
+  });
+  // 反射池
+  ctx.fillStyle = '#88bbcc';
+  ctx.fillRect(x-8*p, groundY-3*p, 18*p, 3*p);
+  // 反射（薄く）
+  ctx.globalAlpha = 0.3;
+  ctx.fillStyle = '#f5f0ec';
+  ctx.fillRect(x-6*p, groundY-2*p, 14*p, 3*p);
+  ctx.globalAlpha = 1;
+}
+
+// --- バリ棚田 ---
+function drawRiceTerraces(x, groundY) {
+  const p = PX;
+  const greens = ['#44aa44','#55bb44','#336633','#44bb33'];
+  // 段々畑
+  for (let i = 0; i < 6; i++) {
+    ctx.fillStyle = greens[i%4];
+    ctx.fillRect(x-15*p+i*p, groundY-(4+i*3)*p, (32-i*2)*p, 3*p);
+    ctx.fillStyle = '#2266aa';
+    ctx.fillRect(x-15*p+i*p, groundY-(3+i*3)*p, (32-i*2)*p, p); // 水
+  }
+  // ヤシの木
+  ctx.fillStyle = '#774400';
+  ctx.fillRect(x+8*p, groundY-20*p, 2*p, 12*p);
+  ctx.fillStyle = '#44aa22';
+  [-4,-1,2,5].forEach(dx => ctx.fillRect(x+8*p, groundY-18*p, dx*p, p));
+}
+
+// --- マーライオン（シンガポール） ---
+function drawMerlion(x, groundY) {
+  const p = PX;
+  // 体（魚の尾）
+  ctx.fillStyle = '#ddddcc';
+  ctx.fillRect(x-4*p, groundY-16*p, 10*p, 12*p);
+  // 尻尾
+  ctx.beginPath();
+  ctx.moveTo(x+6*p, groundY-6*p);
+  ctx.lineTo(x+12*p, groundY-2*p);
+  ctx.lineTo(x+8*p, groundY);
+  ctx.lineTo(x+4*p, groundY-4*p);
+  ctx.fillStyle = '#ccccbb';
+  ctx.fill();
+  // 頭（ライオン）
+  drawCircle(x, groundY-18*p, 5*p, '#ddddcc');
+  // たてがみ
+  ctx.fillStyle = '#ccbbaa';
+  drawCircle(x, groundY-18*p, 6*p, 'rgba(200,180,150,0.5)');
+  // 口から水
+  ctx.fillStyle = '#44aaff';
+  ctx.fillRect(x-p, groundY-16*p, 2*p, 6*p);
+  drawCircle(x, groundY-10*p, 2*p, '#44aaff');
+  // 水の池
+  ctx.fillStyle = '#2255aa';
+  ctx.fillRect(x-12*p, groundY-2*p, 26*p, 2*p);
+  // 都市の背景
+  ctx.fillStyle = '#334455';
+  [x-14*p, x+8*p, x+13*p].forEach((bx,i) => {
+    const bh = [14,18,12][i];
+    ctx.fillRect(bx, groundY-bh*p, 5*p, bh*p);
+    ctx.fillStyle = '#ffff88';
+    ctx.fillRect(bx+p, groundY-(bh-2)*p, 3*p, 8*p);
+    ctx.fillStyle = '#334455';
+  });
+}
+
+// --- 韓国の宮殿（景福宮） ---
+function drawKoreanPalace(x, groundY) {
+  const p = PX;
+  // 石の基礎
+  ctx.fillStyle = '#aaa488';
+  ctx.fillRect(x-13*p, groundY-4*p, 28*p, 4*p);
+  // 本殿
+  ctx.fillStyle = '#cc4422';
+  ctx.fillRect(x-10*p, groundY-16*p, 22*p, 12*p);
+  // 大きな反り屋根
+  ctx.fillStyle = '#224400';
+  ctx.fillRect(x-13*p, groundY-18*p, 28*p, 3*p);
+  ctx.fillRect(x-11*p, groundY-20*p, 24*p, 2*p);
+  // 屋根の反り（角）
+  ctx.fillRect(x-14*p, groundY-17*p, 3*p, p);
+  ctx.fillRect(x+13*p, groundY-17*p, 3*p, p);
+  // 柱
+  ctx.fillStyle = '#aa3311';
+  for (let i = 0; i < 5; i++) ctx.fillRect(x-8*p+i*4*p, groundY-15*p, 2*p, 11*p);
+  // 門
+  ctx.fillStyle = '#884422';
+  ctx.fillRect(x-p, groundY-10*p, 4*p, 10*p);
+}
+
+// --- 万里の長城 ---
+function drawGreatWall(x, groundY) {
+  const p = PX;
+  // 山の上に続く城壁
+  ctx.fillStyle = '#aa9977';
+  for (let i = 0; i < 7; i++) {
+    const wx = x - 14*p + i*4*p;
+    const wy = groundY - (8 + Math.abs(i-3)*2)*p;
+    ctx.fillRect(wx, wy, 4*p, 8*p);
+    // 城壁の歯型
+    [0,2].forEach(dx => ctx.fillRect(wx+dx*p, wy-2*p, p, 2*p));
+  }
+  // 望楼（烽火台）
+  ctx.fillStyle = '#bb9955';
+  ctx.fillRect(x-2*p, groundY-16*p, 6*p, 10*p);
+  ctx.fillRect(x-3*p, groundY-17*p, 8*p, 2*p);
+  [0,2,4].forEach(dx => ctx.fillRect(x-3*p+dx*p, groundY-19*p, p, 2*p));
+}
+
+// --- 川越の蔵造り ---
+function drawKawagoe(x, groundY) {
+  const p = PX;
+  for (let i = 0; i < 3; i++) {
+    const bx = x - 11*p + i*9*p;
+    ctx.fillStyle = ['#2a2a2a','#3a3030','#282828'][i];
+    ctx.fillRect(bx, groundY-18*p, 8*p, 18*p);
+    // 瓦屋根
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(bx-p, groundY-20*p, 10*p, 3*p);
+    ctx.fillRect(bx, groundY-22*p, 8*p, 2*p);
+    // 白い漆喰窓
+    ctx.fillStyle = '#f0ede0';
+    ctx.fillRect(bx+p, groundY-15*p, 3*p, 4*p);
+    ctx.fillRect(bx+p, groundY-8*p, 3*p, 4*p);
+    // 格子
+    ctx.fillStyle = '#3a2a1a';
+    ctx.fillRect(bx+2*p, groundY-15*p, p, 4*p);
+    ctx.fillRect(bx+p, groundY-13*p, 3*p, p);
+  }
+}
+
+// --- クレープ屋（原宿） ---
+function drawCrepeShop(x, groundY) {
+  const p = PX;
+  // 建物
+  ctx.fillStyle = '#ffddee';
+  ctx.fillRect(x-12*p, groundY-20*p, 26*p, 20*p);
+  // カラフルな看板
+  ctx.fillStyle = '#ff6699';
+  ctx.fillRect(x-12*p, groundY-22*p, 26*p, 3*p);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x-10*p, groundY-22*p, 22*p, p);
+  // クレープ（コーン型）
+  ctx.fillStyle = '#ffcc88';
+  ctx.beginPath(); ctx.moveTo(x-4*p, groundY-10*p); ctx.lineTo(x, groundY-4*p); ctx.lineTo(x+4*p, groundY-10*p); ctx.fill();
+  // クリーム
+  drawCircle(x, groundY-11*p, 4*p, '#fff5ee');
+  // イチゴ
+  drawCircle(x-2*p, groundY-13*p, 2*p, '#ff2244');
+  // 竹下通りの人々
+  ctx.fillStyle = '#ffcc88';
+  [x-8*p, x+6*p].forEach(px => {
+    drawCircle(px, groundY-18*p, 2*p, '#ffcc88');
+    ctx.fillStyle = '#ff88aa'; ctx.fillRect(px-p, groundY-16*p, 2*p, 5*p);
+    ctx.fillStyle = '#ffcc88';
+  });
+}
+
+// --- 自宅の庭 ---
+function drawHome(x, groundY) {
+  const p = PX;
+  const bx = x - 10*p, by = groundY - 19*p;
+  // 屋根（三角）
+  ctx.fillStyle = '#554433';
+  for (let i = 0; i < 9; i++) {
+    const rw = (i+1)*2;
+    ctx.fillRect(bx + (10-rw/2)*p, by + i*p, rw*p, p);
+  }
+  // 壁
+  ctx.fillStyle = '#f5e8d0';
+  ctx.fillRect(bx, by+9*p, 20*p, 10*p);
+  // ドア
+  ctx.fillStyle = '#8b5e3c';
+  ctx.fillRect(bx+8*p, by+14*p, 4*p, 5*p);
+  // 窓
+  ctx.fillStyle = '#aaddff';
+  ctx.fillRect(bx+2*p, by+11*p, 4*p, 4*p);
+  ctx.fillRect(bx+14*p, by+11*p, 4*p, 4*p);
+  ctx.fillStyle = '#88aacc';
+  ctx.fillRect(bx+2*p, by+11*p, 4*p, p);
+  ctx.fillRect(bx+14*p, by+11*p, 4*p, p);
+  // 壁アウトライン
+  ctx.fillStyle = '#332211';
+  ctx.fillRect(bx, by+9*p, 20*p, p);
+  ctx.fillRect(bx, by+9*p, p, 10*p);
+  ctx.fillRect(bx+19*p, by+9*p, p, 10*p);
+  ctx.fillRect(bx, by+18*p, 20*p, p);
+}
+
+// --- 近所の公園（桜の木） ---
+function drawPark(x, groundY) {
+  const p = PX;
+  const tx = x - 6*p, by = groundY;
+  // 幹
+  ctx.fillStyle = '#8b5e3c';
+  ctx.fillRect(tx+4*p, by-12*p, 3*p, 12*p);
+  // 花（ランダム感のある桜の固まり）
+  ctx.fillStyle = '#ffaabb';
+  [[0,0,12,6],[1,6,10,5],[2,10,8,4],[-1,3,5,4],[7,4,5,4]].forEach(([ox,oy,w,h]) =>
+    ctx.fillRect(tx+ox*p, by-22*p+oy*p, w*p, h*p));
+  ctx.fillStyle = '#ff88aa';
+  [[2,2,4,2],[6,8,3,2],[1,13,3,2]].forEach(([ox,oy,w,h]) =>
+    ctx.fillRect(tx+ox*p, by-22*p+oy*p, w*p, h*p));
+  ctx.fillStyle = '#ffffff';
+  [[3,1,2,p],[7,5,2,p],[4,11,2,p]].forEach(([ox,oy,w,h]) =>
+    ctx.fillRect(tx+ox*p, by-22*p+oy*p, w*p, h));
+  // ベンチ
+  ctx.fillStyle = '#8b7355';
+  ctx.fillRect(tx+12*p, by-4*p, 8*p, p);
+  ctx.fillRect(tx+13*p, by-3*p, p, 3*p);
+  ctx.fillRect(tx+18*p, by-3*p, p, 3*p);
+}
+
+// --- 最寄り駅 ---
+function drawStation(x, groundY) {
+  const p = PX;
+  const bx = x - 12*p, by = groundY - 20*p;
+  // 屋根
+  ctx.fillStyle = '#334466';
+  ctx.fillRect(bx-p, by, 26*p, 3*p);
+  ctx.fillRect(bx+p, by-2*p, 22*p, 2*p);
+  // 壁
+  ctx.fillStyle = '#dde0e8';
+  ctx.fillRect(bx, by+3*p, 24*p, 17*p);
+  // 改札エリア（中央）
+  ctx.fillStyle = '#bbccdd';
+  ctx.fillRect(bx+9*p, by+10*p, 6*p, 10*p);
+  // 窓
+  ctx.fillStyle = '#99bbdd';
+  [[2,5,4,5],[9,5,6,4],[18,5,4,5]].forEach(([ox,oy,w,h]) =>
+    ctx.fillRect(bx+ox*p, by+oy*p, w*p, h*p));
+  ctx.fillStyle = '#7799bb';
+  [[2,5,4,p],[9,5,6,p],[18,5,4,p]].forEach(([ox,oy,w,h]) =>
+    ctx.fillRect(bx+ox*p, by+oy*p, w*p, h));
+  // 時計（丸）
+  drawCircle(bx+12*p, by+3*p, 3*p, '#ffffff');
+  drawCircle(bx+12*p, by+3*p, 2*p, '#eeeeff');
+  ctx.fillStyle = '#223355';
+  ctx.fillRect(bx+11*p+1, by+3*p-2, p, 2*p); // 時針
+  ctx.fillRect(bx+12*p, by+3*p, p+1, p);     // 分針
+  // アウトライン
+  ctx.fillStyle = '#223355';
+  ctx.fillRect(bx, by+3*p, 24*p, p);
+  ctx.fillRect(bx, by+19*p, 24*p, p);
+  ctx.fillRect(bx, by+3*p, p, 17*p);
+  ctx.fillRect(bx+23*p, by+3*p, p, 17*p);
+}
+
+// --- 渋谷・新宿（都会のビル群） ---
+function drawUrban(x, groundY) {
+  const p = PX;
+  const buildings = [
+    { ox: -20, h: 35, w: 10, color: '#334466', win: '#99bbff' },
+    { ox: -8,  h: 28, w: 8,  color: '#445577', win: '#aaccff' },
+    { ox:  2,  h: 40, w: 12, color: '#223355', win: '#88aaee' },
+    { ox: 16,  h: 22, w: 9,  color: '#556688', win: '#bbddff' },
+  ];
+  buildings.forEach(b => {
+    const bx = x + b.ox*p, by = groundY - b.h*p;
+    ctx.fillStyle = b.color;
+    ctx.fillRect(bx, by, b.w*p, b.h*p);
+    ctx.fillStyle = b.win;
+    for (let wy = 2; wy < b.h-2; wy += 4)
+      for (let wx = 1; wx < b.w-1; wx += 3)
+        ctx.fillRect(bx+wx*p, by+wy*p, 2*p, 2*p);
+    ctx.fillStyle = '#112244';
+    ctx.fillRect(bx, by, b.w*p, p);
+    ctx.fillRect(bx, by, p, b.h*p);
+    ctx.fillRect(bx+(b.w-1)*p, by, p, b.h*p);
+  });
+}
+
+// --- 横浜（港・クレーン） ---
+function drawHarbor(x, groundY) {
+  const p = PX;
+  const bx = x - 14*p;
+  // 倉庫
+  ctx.fillStyle = '#cc4422';
+  ctx.fillRect(bx, groundY-14*p, 16*p, 14*p);
+  ctx.fillStyle = '#aa3311';
+  ctx.fillRect(bx, groundY-14*p, 16*p, 2*p);
+  ctx.fillStyle = '#885522';
+  ctx.fillRect(bx+4*p, groundY-8*p, 8*p, 8*p);
+  // クレーン
+  ctx.fillStyle = '#ddbb00';
+  ctx.fillRect(bx+18*p, groundY-22*p, 2*p, 22*p); // 支柱
+  ctx.fillRect(bx+12*p, groundY-22*p, 14*p, 2*p); // 横梁
+  ctx.fillRect(bx+19*p, groundY-22*p, p, 22*p);
+  ctx.fillStyle = '#bbaa00';
+  ctx.fillRect(bx+20*p, groundY-14*p, p, 14*p); // ワイヤー
+  ctx.fillRect(bx+20*p, groundY-14*p, 3*p, 2*p); // フック
+  // 海（水面のライン）
+  ctx.fillStyle = 'rgba(0,100,200,0.5)';
+  ctx.fillRect(bx, groundY-3*p, 30*p, 3*p);
+  ctx.fillStyle = 'rgba(100,180,255,0.4)';
+  ctx.fillRect(bx+2*p, groundY-2*p, 6*p, p);
+  ctx.fillRect(bx+14*p, groundY-2*p, 5*p, p);
+}
+
+// --- 富士山 ---
+function drawMtFuji(x, W, groundY) {
+  const p = PX;
+  // 山体（大きめ）
+  ctx.fillStyle = '#445566';
+  for (let i = 0; i < 28; i++) {
+    const rw = (i+1)*3;
+    ctx.fillRect(x - rw*p/2, groundY - (28-i)*p, rw*p, p);
+  }
+  // 雪（山頂）
+  ctx.fillStyle = '#eeeeff';
+  for (let i = 0; i < 8; i++) {
+    const rw = (i+1)*2;
+    ctx.fillRect(x - rw*p/2, groundY - (28-i)*p, rw*p, p);
+  }
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < 4; i++) {
+    const rw = (i+1)*2;
+    ctx.fillRect(x - rw*p/2, groundY - (28-i)*p, rw*p, p);
+  }
+}
+
+// --- 大阪（たこ焼き屋台） ---
+function drawTakoyaki(x, groundY) {
+  const p = PX;
+  const bx = x - 12*p;
+  // 幌（のれん）
+  ctx.fillStyle = '#cc2200';
+  ctx.fillRect(bx-2*p, groundY-18*p, 28*p, 3*p);
+  [0,4,8,12,16,20].forEach(ox => {
+    ctx.fillStyle = ox%8===0 ? '#cc2200' : '#ffffff';
+    ctx.fillRect(bx+ox*p, groundY-15*p, 3*p, 5*p);
+  });
+  // 屋台本体
+  ctx.fillStyle = '#ddbb77';
+  ctx.fillRect(bx, groundY-10*p, 24*p, 10*p);
+  // 鉄板（グリル）
+  ctx.fillStyle = '#444444';
+  ctx.fillRect(bx+2*p, groundY-9*p, 20*p, 6*p);
+  // たこ焼き（丸）
+  const colors = ['#cc8844','#bb7733','#dd9955'];
+  [[4,7],[8,7],[12,7],[16,7],[6,5],[10,5],[14,5]].forEach(([ox,oy], i) => {
+    drawCircle(bx+ox*p, groundY-oy*p, 2*p, colors[i%3]);
+    ctx.fillStyle = '#553311';
+    ctx.fillRect(bx+ox*p-p/2, groundY-oy*p-p/2, p, p);
+  });
+  // 足（屋台の脚）
+  ctx.fillStyle = '#886644';
+  ctx.fillRect(bx+2*p, groundY, 2*p, 3*p);
+  ctx.fillRect(bx+20*p, groundY, 2*p, 3*p);
+}
+
+function drawKonbini(x, groundY) {
+  const p  = PX;
+  const bw = 24 * p;   // 建物の幅
+  const bh = 20 * p;   // 建物の高さ
+  const bx = x - bw / 2;
+  const by = groundY - bh;
+
+  // 外壁
+  ctx.fillStyle = '#f5f5ee';
+  ctx.fillRect(bx, by, bw, bh);
+
+  // 屋根看板（左：緑 / 右：青）
+  ctx.fillStyle = '#009944';
+  ctx.fillRect(bx, by, 12 * p, 5 * p);
+  ctx.fillStyle = '#0055bb';
+  ctx.fillRect(bx + 12 * p, by, 12 * p, 5 * p);
+
+  // 白い帯（店名エリア）
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(bx + p, by + 5 * p, 22 * p, 3 * p);
+  // 帯の中の赤いロゴっぽいドット
+  ctx.fillStyle = '#dd2200';
+  [3, 7, 13, 17].forEach(dx => ctx.fillRect(bx + dx * p, by + 6 * p, p, p));
+
+  // 左ショーウィンドウ
+  ctx.fillStyle = '#aaddff';
+  ctx.fillRect(bx + p, by + 9 * p, 8 * p, 9 * p);
+  ctx.fillStyle = '#77aacc';
+  ctx.fillRect(bx + p, by + 9 * p, 8 * p, 2 * p); // 上部の影
+
+  // 右ショーウィンドウ
+  ctx.fillStyle = '#aaddff';
+  ctx.fillRect(bx + 11 * p, by + 9 * p, 8 * p, 9 * p);
+  ctx.fillStyle = '#77aacc';
+  ctx.fillRect(bx + 11 * p, by + 9 * p, 8 * p, 2 * p);
+
+  // 自動ドア（中央右寄り）
+  ctx.fillStyle = '#ddeeff';
+  ctx.fillRect(bx + 20 * p, by + 13 * p, 3 * p, 5 * p);
+
+  // ウィンドウ枠
+  ctx.fillStyle = '#334455';
+  [[bx + p, by + 9 * p, p, 9 * p], [bx + 9 * p, by + 9 * p, p, 9 * p],
+   [bx + p, by + 9 * p, 9 * p, p],
+   [bx + 11 * p, by + 9 * p, p, 9 * p], [bx + 19 * p, by + 9 * p, p, 9 * p],
+   [bx + 11 * p, by + 9 * p, 9 * p, p]].forEach(r => ctx.fillRect(...r));
+
+  // 建物アウトライン
+  ctx.fillStyle = '#223344';
+  ctx.fillRect(bx, by, bw, p);
+  ctx.fillRect(bx, by + bh - p, bw, p);
+  ctx.fillRect(bx, by, p, bh);
+  ctx.fillRect(bx + bw - p, by, p, bh);
+
+  // 看板帯のアウトライン
+  ctx.fillStyle = '#001133';
+  ctx.fillRect(bx, by + 5 * p, bw, p);
+  ctx.fillRect(bx, by + 8 * p, bw, p);
+}
+
 function drawCircle(x, y, r, color) {
   ctx.fillStyle = color;
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
@@ -897,8 +2783,8 @@ const Audio = (() => {
 // =============================================================
 function resetGame() {
   if (!confirm('セーブデータを全削除してリセットしますか？')) return;
-  localStorage.removeItem(SAVE_KEY);
-  localStorage.removeItem('travel_clicker_v1');
+  ['travel_clicker_v1','travel_clicker_v2','travel_clicker_v3','travel_clicker_v4']
+    .forEach(k => localStorage.removeItem(k));
   location.reload();
 }
 
@@ -908,23 +2794,36 @@ function saveGame() {
 }
 
 function loadGame() {
-  // v1セーブからの移行
-  const oldRaw = localStorage.getItem('travel_clicker_v1');
-  if (oldRaw) {
-    try {
-      const old = JSON.parse(oldRaw);
-      G.totalDistance = old.totalDistance || 0;
-      G.visitedIds    = old.visitedIds || [];
-    } catch(e) {}
-  }
-
   const raw = localStorage.getItem(SAVE_KEY);
   if (!raw) return;
   try {
     const s = JSON.parse(raw);
     G = Object.assign(G, s);
+    // キーのデフォルト保証
+    if (!G.equipmentCounts || typeof G.equipmentCounts !== 'object') G.equipmentCounts = {};
+    if (!G.vehicleLevels   || typeof G.vehicleLevels   !== 'object') G.vehicleLevels = {};
+    if (!G.sponsorCounts   || typeof G.sponsorCounts   !== 'object') G.sponsorCounts = {};
+    if (!Array.isArray(G.unlockedVehicles)) G.unlockedVehicles = [];
+    if (!Array.isArray(G.visitedIds))       G.visitedIds = [];
+    if (typeof G.locationIndex !== 'number') G.locationIndex = G.visitedIds.length;
+    if (typeof G.lastLocDist   !== 'number') G.lastLocDist   = G.totalDistance;
+    if (typeof G.nextLocDist   !== 'number' || G.nextLocDist <= 0) G.nextLocDist = 75;
+    // visitedIdsから乗り物解放を再適用（旧セーブ互換）
+    for (const id of G.visitedIds) {
+      const loc = LOCATIONS.find(l => l.id === id);
+      if (loc && loc.unlocksVehicle && !G.unlockedVehicles.includes(loc.unlocksVehicle)) {
+        G.unlockedVehicles.push(loc.unlocksVehicle);
+      }
+    }
+    // unlockRequires チェック（ロード時にレベル条件を満たした乗り物を解放）
+    for (const v of VEHICLES) {
+      if (v.unlockRequires && !G.unlockedVehicles.includes(v.id)) {
+        if ((G.vehicleLevels[v.unlockRequires.id] || 0) >= v.unlockRequires.level) {
+          G.unlockedVehicles.push(v.id);
+        }
+      }
+    }
     recalcAll();
-    checkLocationUnlocks();
   } catch(e) { console.error('Load failed:', e); }
 }
 

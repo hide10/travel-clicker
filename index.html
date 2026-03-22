@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Travel Clicker</title>
+  <title>トラベルインフルエンサー</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗺️</text></svg>">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -12,7 +13,7 @@
 
   <!-- ===== ヘッダー ===== -->
   <header id="header">
-    <h1>🗺️ TRAVEL CLICKER</h1>
+    <h1>🗺️ トラベルインフルエンサー</h1>
     <div id="header-stats">
       <div class="hstat">🌟 <span id="popularity-val">0</span></div>
       <div class="hstat">👥 <span id="follower-val">0</span></div>
@@ -39,14 +40,10 @@
     <!-- ステータスバー -->
     <div id="status-bar">
       <div class="status-block">
-        <div class="status-label">📍 現在地</div>
-        <div class="status-value" id="cur-loc">自宅の庭</div>
-        <div class="status-sub">総移動距離: <span id="total-dist">0m</span></div>
-      </div>
-      <div class="status-block">
-        <div class="status-label">🎯 次のショップ</div>
+        <div class="status-label">📸 次の映えスポット</div>
         <div class="status-value" id="nxt-loc">コンビニ</div>
         <div class="status-sub" id="nxt-dist">30m 先</div>
+        <div class="status-sub">総移動距離: <span id="total-dist">0m</span></div>
       </div>
     </div>
 
@@ -72,7 +69,7 @@
     <div id="shop-tabs">
       <button class="tab-btn active" data-tab="sponsor" onclick="setTab('sponsor')">🤝 スポンサー</button>
       <button class="tab-btn" data-tab="vehicle"  onclick="setTab('vehicle')">🚗 乗り物</button>
-      <button class="tab-btn" data-tab="camera"   onclick="setTab('camera')">📸 カメラ</button>
+      <button class="tab-btn" data-tab="equipment" onclick="setTab('equipment')">🎥 機材</button>
     </div>
     <div id="shop-items"></div>
   </aside>

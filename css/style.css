@@ -110,6 +110,9 @@ html, body {
   cursor: pointer;
   user-select: none;
   z-index: 10;
+  white-space: pre;
+  text-align: center;
+  line-height: 1.8;
 }
 
 #walk-btn:hover {
@@ -145,9 +148,6 @@ html, body {
 
 /* --- ステータスバー --------------------------------------- */
 #status-bar {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--gap);
   flex: 0 0 auto;
 }
 
