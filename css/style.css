@@ -272,6 +272,19 @@ html, body {
 .log-system   { color: var(--text-dim); }
 .log-info     { color: var(--text-dim); }
 
+/* --- ヘッダーstat ----------------------------------------- */
+#header-stats {
+  display: flex;
+  gap: 16px;
+}
+.hstat {
+  font-size: 8px;
+  color: var(--text-dim);
+}
+.hstat span {
+  color: var(--accent);
+}
+
 /* --- ショップ（右カラム） --------------------------------- */
 #shop {
   grid-area: shop;
@@ -283,24 +296,33 @@ html, body {
   overflow: hidden;
 }
 
-#shop-header {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+/* タブ */
+#shop-tabs {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  border-bottom: 2px solid var(--border);
 }
 
-#shop-title {
-  font-size: 9px;
-  color: var(--accent2);
-}
-
-#shop-stats {
-  font-size: 8px;
+.tab-btn {
+  flex: 1;
+  font-family: var(--font);
+  font-size: 7px;
+  background: transparent;
   color: var(--text-dim);
-  text-align: right;
-  line-height: 2;
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 6px 2px;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.tab-btn:last-child { border-right: none; }
+.tab-btn.active {
+  color: var(--accent2);
+  background: rgba(255,204,0,0.08);
+  border-bottom: 2px solid var(--accent2);
+}
+.tab-btn:hover:not(.active) {
+  color: var(--text);
+  background: rgba(255,255,255,0.04);
 }
 
 #shop-items {
@@ -403,6 +425,17 @@ html, body {
 .item-owned {
   font-size: 8px;
   color: var(--text-dim);
+}
+
+/* 購入済みカメラ */
+.shop-item.owned {
+  opacity: 0.4;
+  border-color: var(--green);
+}
+.shop-item.owned .buy-btn {
+  background: #1a3a1a;
+  color: var(--green);
+  font-size: 7px;
 }
 
 /* --- セーブボタン ----------------------------------------- */

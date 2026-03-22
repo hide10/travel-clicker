@@ -13,19 +13,22 @@
   <!-- ===== ヘッダー ===== -->
   <header id="header">
     <h1>🗺️ TRAVEL CLICKER</h1>
-    <div id="header-right">
-      <button class="header-btn" onclick="saveGame()">💾 セーブ</button>
+    <div id="header-stats">
+      <div class="hstat">👥 <span id="follower-val">0</span></div>
+      <div class="hstat">💰 <span id="money-val">0円</span></div>
+      <div class="hstat">💸 <span id="income-val">0円/秒</span></div>
+      <div class="hstat">⚡ <span id="speed-val">0m/s</span></div>
     </div>
+    <button class="header-btn" onclick="saveGame()">💾 セーブ</button>
   </header>
 
-  <!-- ===== メイン（左カラム） ===== -->
+  <!-- ===== メイン（左） ===== -->
   <main id="main">
 
-    <!-- シーン（キャンバス） -->
+    <!-- シーン -->
     <div id="scene-wrap">
       <canvas id="scene-canvas"></canvas>
       <div id="milestone-notif"></div>
-      <!-- タップ/クリック移動ボタン（ホイールなしユーザー向け） -->
       <button id="walk-btn" onclick="onWalkBtn()" title="クリック/タップで前進">
         🚶 歩く
       </button>
@@ -36,12 +39,12 @@
       <div class="status-block">
         <div class="status-label">📍 現在地</div>
         <div class="status-value" id="cur-loc">自宅の庭</div>
-        <div class="status-sub">総移動距離: <span id="total-dist">0 m</span></div>
+        <div class="status-sub">総移動距離: <span id="total-dist">0m</span></div>
       </div>
       <div class="status-block">
         <div class="status-label">🎯 次のショップ</div>
-        <div class="status-value" id="nxt-loc">近所の公園</div>
-        <div class="status-sub" id="nxt-dist">500 m 先</div>
+        <div class="status-value" id="nxt-loc">コンビニ</div>
+        <div class="status-sub" id="nxt-dist">30m 先</div>
       </div>
     </div>
 
@@ -62,21 +65,17 @@
 
   </main>
 
-  <!-- ===== ショップ（右カラム） ===== -->
+  <!-- ===== ショップ（右） ===== -->
   <aside id="shop">
-    <div id="shop-header">
-      <div id="shop-title">🛒 ショップ</div>
-      <div id="shop-stats">
-        💰 <span id="coin-val">0 m</span><br>
-        ⚡ <span id="speed-val">0 m/s</span>
-      </div>
+    <div id="shop-tabs">
+      <button class="tab-btn active" data-tab="sponsor" onclick="setTab('sponsor')">🤝 スポンサー</button>
+      <button class="tab-btn" data-tab="vehicle"  onclick="setTab('vehicle')">🚗 乗り物</button>
+      <button class="tab-btn" data-tab="camera"   onclick="setTab('camera')">📸 カメラ</button>
     </div>
-    <div id="shop-items">
-      <!-- JS が動的に生成 -->
-    </div>
+    <div id="shop-items"></div>
   </aside>
 
-</div><!-- #app -->
+</div>
 
 <script src="js/data.js"></script>
 <script src="js/game.js"></script>
