@@ -65,6 +65,11 @@ function gameLoop(ts) {
   requestAnimationFrame(gameLoop);
 }
 
+// 歩くボタン（グローバル公開）
+function onWalkBtn() {
+  travel(STEP_PER_NOTCH * 5, true);
+}
+
 // =============================================================
 // MOVEMENT
 // =============================================================
@@ -93,6 +98,10 @@ function setupInput() {
     const notches    = Math.min(rawNotches, MAX_NOTCH);
     travel(notches * STEP_PER_NOTCH, true);
   }, { passive: false });
+
+    // キャンバスクリックでも歩ける
+  const cv = document.getElementById('scene-canvas');
+  if (cv) cv.addEventListener('click', () => travel(STEP_PER_NOTCH * 3, true));
 
   // タッチ（スマホ対応）
   let lastTouchY = 0;
