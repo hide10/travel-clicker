@@ -16,10 +16,11 @@
     <h1>🗺️ トラベルインフルエンサー</h1>
     <div id="header-stats">
       <div class="hstat">🌟 <span id="popularity-val">0</span></div>
-      <div class="hstat">👥 <span id="follower-val">0</span></div>
+      <div class="hstat">🆕 <span id="new-follower-val">0</span>新規</div>
+      <div class="hstat">👥 <span id="total-follower-val">0</span>累計</div>
       <div class="hstat">💰 <span id="money-val">0円</span></div>
       <div class="hstat">💸 <span id="income-val">0円/秒</span></div>
-      <div class="hstat">⚡ <span id="speed-val">0m/s</span></div>
+      <div class="hstat">⚡ <span id="speed-val">—</span></div>
     </div>
     <button class="header-btn" onclick="saveGame()">💾 セーブ</button>
     <button class="header-btn danger" onclick="resetGame()">🗑️ リセット</button>
@@ -41,9 +42,9 @@
     <div id="status-bar">
       <div class="status-block">
         <div class="status-label">📸 次の映えスポット</div>
-        <div class="status-value" id="nxt-loc">コンビニ</div>
-        <div class="status-sub" id="nxt-dist">30m 先</div>
-        <div class="status-sub">総移動距離: <span id="total-dist">0m</span></div>
+        <div class="status-value" id="nxt-loc">—</div>
+        <div class="status-sub" id="nxt-area">近所 エリア</div>
+        <div class="status-sub">総訪問スポット: <span id="total-spots">0</span></div>
       </div>
     </div>
 
