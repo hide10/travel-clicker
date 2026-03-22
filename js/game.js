@@ -12,14 +12,14 @@ const AUTOSAVE_MS    = 30000;
 // =============================================================
 let G = {
   totalDistance:    0,         // 全時間移動距離（m）
-  followers:        0,         // フォロワー数
-  money:            0,         // 所持金（円）
-  vehicleLevels:    {},        // { vehicleId: level }  ← 台数ではなくレベル
+  popularity:       0,         // 🌟 人気（フォロワー獲得を増幅、消費しない）
+  followers:        0,         // 👥 フォロワー（スポンサー獲得に消費する）
+  money:            0,         // 💰 円（スポンサーが払う、乗り物・カメラに使う）
+  vehicleLevels:    {},        // { vehicleId: level }
   sponsorCounts:    {},        // { sponsorId: count }
   ownedCameras:     [],        // 購入済みカメラID配列
   unlockedVehicles: ['legs'],  // 解放済み乗り物ID
   visitedIds:       [],        // 通過済みロケーションID
-  startMoney:       100,       // 初期資金（ゲーム開始時に付与済みフラグ）
   version:          VERSION,
 };
 
@@ -40,10 +40,6 @@ let floats       = [];         // フロートテキスト配列 [{x,y,text,life
 // =============================================================
 function init() {
   loadGame();
-  if (G.money === 0 && G.totalDistance === 0) {
-    G.money = G.startMoney;  // 初回のみ起動資金
-    addLog('💰 旅スタート資金 100円をゲット！', 'system');
-  }
   recalcAll();
   setupInput();
   setupCanvas();
@@ -66,11 +62,9 @@ function gameLoop(ts) {
     travelAuto(autoSpeed * dt);
   }
 
-  // スポンサー収入
-  const income = sponsorBase * followerBonus() * dt;
-  if (income > 0) {
-    G.money += income;
-  }
+  // スポンサー収入（人気で増幅）
+  const income = sponsorBase * popularityIncomeBonus() * dt;
+  if (income > 0) G.money += income;
 
   clickBurst = Math.max(0, clickBurst - dt * 1000);
 
@@ -178,11 +172,15 @@ function checkLocationUnlocks() {
 function onLocationReached(loc) {
   G.visitedIds.push(loc.id);
 
-  // フォロワー獲得
-  const gained = Math.floor(loc.buzzFollowers * cameraMultiplier);
+  // 人気UP（場所の有名度に比例、消費しない）
+  const popGain = Math.ceil(loc.buzzFollowers / 20);
+  G.popularity += popGain;
+
+  // フォロワー獲得（人気とカメラで増幅）
+  const gained = Math.floor(loc.buzzFollowers * cameraMultiplier * popularityMultiplier());
   G.followers += gained;
   addLog(`📍 <b>${loc.name}</b> — ${loc.description}`, 'location');
-  addLog(`📸 投稿した！ +${fmtNum(gained)} フォロワー`, 'follower');
+  addLog(`📸 投稿した！ +${fmtNum(gained)} フォロワー（人気${fmtNum(G.popularity)}）`, 'follower');
 
   // 乗り物解放
   if (loc.unlocksVehicle && !G.unlockedVehicles.includes(loc.unlocksVehicle)) {
@@ -246,20 +244,22 @@ function buyVehicle(id) {
 }
 
 // =============================================================
-// SPONSORS（台数制）
+// SPONSORS（フォロワー消費で獲得）
 // =============================================================
-function getSponsorCost(id) {
+function getSponsorFollowerCost(id) {
   const s = SPONSORS.find(s => s.id === id);
   if (!s) return Infinity;
   const n = G.sponsorCounts[id] || 0;
-  return s.baseCost * Math.pow(SPONSOR_COST_MULT, n);
+  return Math.ceil(s.followerCost * Math.pow(SPONSOR_COST_MULT, n));
 }
 
 function buySponsor(id) {
-  const cost = getSponsorCost(id);
-  if (G.money < cost) return;
-  G.money -= cost;
+  const cost = getSponsorFollowerCost(id);
+  if (G.followers < cost) return;
+  G.followers -= cost;   // フォロワーを消費して契約
   G.sponsorCounts[id] = (G.sponsorCounts[id] || 0) + 1;
+  const s = SPONSORS.find(s => s.id === id);
+  addLog(`🤝 <b>${s.name}</b> と契約！ +${fmtYen(s.baseIncome)}/秒`, 'unlock');
   recalcAll();
   Audio.purchase();
   shopDirty = true;
@@ -303,10 +303,15 @@ function recalcAll() {
   }
 }
 
-// フォロワーによる収入倍率: log10(followers+10)
-// 0f→1x, 90f→2x, 990f→3x, 9990f→4x, ...
-function followerBonus() {
-  return Math.log10(G.followers + 10);
+// 人気によるフォロワー獲得倍率: 1 + √(popularity/10)
+// 0人気→1x, 10→2x, 40→3x, 90→4x
+function popularityMultiplier() {
+  return 1 + Math.sqrt(G.popularity / 10);
+}
+
+// 人気による収入倍率（小さめ）: 1 + popularity/5000
+function popularityIncomeBonus() {
+  return 1 + G.popularity / 5000;
 }
 
 // =============================================================
@@ -324,17 +329,16 @@ function renderShop() {
 
 function renderSponsors(el) {
   for (const s of SPONSORS) {
-    if (G.followers < s.followersRequired) continue;
-    const cnt     = G.sponsorCounts[s.id] || 0;
-    const cost    = getSponsorCost(s.id);
-    const canBuy  = G.money >= cost;
-    const incomeNow = s.baseIncome * (cnt + 1) * followerBonus();
+    if (G.popularity < s.popularityRequired) continue;
+    const cnt    = G.sponsorCounts[s.id] || 0;
+    const cost   = getSponsorFollowerCost(s.id);
+    const canBuy = G.followers >= cost;
 
     const div = makeShopItem(
       s.emoji, s.name,
       s.description,
-      `${cnt}件 → 契約後: +${fmtYen(s.baseIncome)}/秒`,
-      fmtYen(cost),
+      `${cnt}件契約中 → +${fmtYen(s.baseIncome)}/秒`,
+      fmtNum(cost) + ' 👥',
       canBuy,
       `buySponsor('${s.id}')`
     );
@@ -418,10 +422,21 @@ function updateUI() {
 
   set('cur-loc',     cur.name);
   set('total-dist',  fmtDist(d));
-  set('follower-val', fmtNum(G.followers));
-  set('money-val',   fmtYen(G.money));
-  set('income-val',  fmtYen(sponsorBase * followerBonus()) + '/秒');
-  set('speed-val',   fmtSpeed(autoSpeed));
+  set('popularity-val', fmtNum(G.popularity));
+  set('follower-val',   fmtNum(G.followers));
+  set('money-val',      fmtYen(G.money));
+  set('income-val',     fmtYen(sponsorBase * popularityIncomeBonus()) + '/秒');
+  set('speed-val',      fmtSpeed(autoSpeed));
+
+  // 歩くボタンのラベルを現在の乗り物に合わせる
+  const topV = getTopVehicle();
+  const legV = VEHICLES.find(v => v.id === 'legs');
+  const hasLegs = (G.vehicleLevels['legs'] || 0) > 0;
+  let label = '🚶 歩く';
+  if (topV && topV.clickLabel) label = topV.clickLabel;
+  else if (hasLegs && legV.clickLabel) label = legV.clickLabel;
+  const walkBtn = document.getElementById('walk-btn');
+  if (walkBtn) walkBtn.textContent = label;
 
   if (nxt) {
     set('nxt-loc',  nxt.name);
@@ -444,11 +459,13 @@ function updateUI() {
     const id = match[1];
 
     let cost = Infinity;
-    if (activeTab === 'sponsor')  cost = getSponsorCost(id);
+    let currency = 'money';
+    if (activeTab === 'sponsor')  { cost = getSponsorFollowerCost(id); currency = 'followers'; }
     if (activeTab === 'vehicle')  cost = getVehicleLvCost(id);
     if (activeTab === 'camera')   cost = (CAMERAS.find(c => c.id === id) || {}).cost || Infinity;
 
-    const can = G.money >= cost && !item.classList.contains('owned');
+    const balance = currency === 'followers' ? G.followers : G.money;
+    const can = balance >= cost && !item.classList.contains('owned');
     btn.disabled = !can;
     item.classList.toggle('can-afford', can);
   });
