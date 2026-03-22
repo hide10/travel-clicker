@@ -101,8 +101,9 @@ const VEHICLES = [
     name: '足の強化',
     emoji: '🦵',
     sprite: 'walk',
-    description: '特製インソールで歩幅がUP',
-    baseSpeed: 0.5,
+    description: '特製インソールで歩幅がUP。クリック距離が伸びる',
+    baseSpeed: 0,        // 自動移動なし（クリックのみに効く）
+    clickPerLevel: 2,    // Lv.1ごとに +2m/クリック
     baseCost: 30,
     unlockedByDefault: true,
   },
@@ -111,8 +112,9 @@ const VEHICLES = [
     name: '自転車',
     emoji: '🚲',
     sprite: 'bicycle',
-    description: 'ペダルを漕ぐと風が気持ちいい',
-    baseSpeed: 5,
+    description: '漕いだぶんだけ進む。クリック距離が大幅UP',
+    baseSpeed: 0,        // 自動移動なし（クリックのみ）
+    clickPerLevel: 15,   // Lv.1ごとに +15m/クリック
     baseCost: 300,
     unlockedAt: 'park',
   },

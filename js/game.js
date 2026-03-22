@@ -143,12 +143,25 @@ function onWalkBtn() {
   travelManual(clickDist() * 5);
 }
 
-// クリック1回分の距離（現在の最高レベル乗り物に応じてスケール）
+// クリック1回分の距離
+// clickPerLevel あり（足・自転車）: そのレベル × clickPerLevel を合算
+// エンジン乗り物あり（原付以降）: autoSpeed × 0.3 を加算
 function clickDist() {
+  // 手動系（clickPerLevel）の合計
+  const manualBonus = VEHICLES
+    .filter(v => v.clickPerLevel)
+    .reduce((sum, v) => {
+      const lv = G.vehicleLevels[v.id] || 0;
+      return sum + v.clickPerLevel * lv;
+    }, 0);
+
+  // エンジン系乗り物のボーナス
   const topV = getTopVehicle();
-  if (!topV) return 0.5;
-  const lv = G.vehicleLevels[topV.id] || 1;
-  return Math.max(0.5, topV.baseSpeed * lv * 0.3);
+  const engineBonus = topV
+    ? topV.baseSpeed * (G.vehicleLevels[topV.id] || 1) * 0.3
+    : 0;
+
+  return Math.max(0.5, manualBonus + engineBonus);
 }
 
 // =============================================================
@@ -212,10 +225,12 @@ function getVehicleSpeed(id) {
   return v.baseSpeed * lv;
 }
 
-// 現在所持している最高tier乗り物
+// 現在所持している最高tier乗り物（自動移動するもの、legsは除く）
 function getTopVehicle() {
   for (let i = VEHICLES.length - 1; i >= 0; i--) {
-    if ((G.vehicleLevels[VEHICLES[i].id] || 0) > 0) return VEHICLES[i];
+    const v = VEHICLES[i];
+    if (v.id === 'legs') continue;
+    if ((G.vehicleLevels[v.id] || 0) > 0) return v;
   }
   return null;
 }
