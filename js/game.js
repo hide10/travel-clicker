@@ -863,6 +863,13 @@ const Audio = (() => {
 // =============================================================
 // SAVE / LOAD
 // =============================================================
+function resetGame() {
+  if (!confirm('セーブデータを全削除してリセットしますか？')) return;
+  localStorage.removeItem(SAVE_KEY);
+  localStorage.removeItem('travel_clicker_v1');
+  location.reload();
+}
+
 function saveGame() {
   G.version = VERSION;
   localStorage.setItem(SAVE_KEY, JSON.stringify(G));
