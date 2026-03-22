@@ -1,0 +1,11 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp
+*~
+
+# Assets（後で追加予定のスプライト等は管理対象にする）
+# node_modules/  # 今は不要
