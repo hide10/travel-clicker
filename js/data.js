@@ -603,7 +603,8 @@ const VEHICLES = [
   },
 ];
 
-const VEHICLE_COST_MULT = 1.15; // Lv.N→N+1 のコスト倍率
+const VEHICLE_COST_MULT = 1.15;  // 乗り物Lv.N→N+1 のコスト倍率
+const SPONSOR_COST_MULT = 1.15;  // スポンサー N件目のコスト倍率
 
 // ============================================================
 // SPONSORS
