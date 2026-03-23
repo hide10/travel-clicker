@@ -217,7 +217,7 @@ function onWalkBtn() {
 
 // クリック1回分のスポット進捗
 function clickPower() {
-  let power = 0.12; // 基本（徒歩）: 約8クリックで1スポット
+  let power = 0.04; // 基本（徒歩）: 約25クリックで1スポット
   for (const v of VEHICLES) {
     const lv = G.vehicleLevels[v.id] || 0;
     if (lv > 0 && v.clickBonus) power += v.clickBonus;
