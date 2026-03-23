@@ -50,6 +50,11 @@ function init() {
   setupInput();
   setupCanvas();
   setInterval(saveGame, AUTOSAVE_MS);
+  // 初期ランドマーク：現在スポットがあればそれを、なければ近所のデフォルト
+  if (!landmark.id) {
+    const entry = getCurrentEntry();
+    landmark = { id: (entry?.spot?.landmark || entry?.area?.defaultLandmark || 'konbini'), timer: 0, maxTimer: 500 };
+  }
   renderShop();
   updateUI();
   requestAnimationFrame(gameLoop);
@@ -138,7 +143,7 @@ function onSpotVisited(spot, area) {
   addLog(`📍 <b>${spot.name}</b> — ${spot.desc}`, 'location');
   addLog(`📸 +${fmtYen(moneyGained)}  +${fmtNum(followersGained)}フォロワー`, 'info');
 
-  landmark = { id: spot.landmark || spot.id, timer: 5000, maxTimer: 5000 };
+  landmark = { id: spot.landmark || area.defaultLandmark || 'konbini', timer: 0, maxTimer: 500 };
 
   // Vehicle unlock threshold check (fire exactly once when threshold is crossed)
   for (const v of VEHICLES) {
@@ -394,16 +399,25 @@ function renderSponsors(el) {
 }
 
 function renderVehicles(el) {
-  for (const v of VEHICLES) {
-    const lv       = G.vehicleLevels[v.id] || 0;
+  // 所持済み乗り物の最大インデックスを探す
+  let highestOwnedIdx = -1;
+  for (let i = 0; i < VEHICLES.length; i++) {
+    if ((G.vehicleLevels[VEHICLES[i].id] || 0) >= 1) highestOwnedIdx = i;
+  }
+
+  for (let i = 0; i < VEHICLES.length; i++) {
+    const v  = VEHICLES[i];
+    const lv = G.vehicleLevels[v.id] || 0;
+
+    // 所持済み OR 次の1台だけ表示（それ以降は隠す）
+    if (lv === 0 && i > highestOwnedIdx + 1) continue;
+
     const unlocked = isVehicleUnlocked(v.id);
     const cost     = getVehicleLvCost(v.id);
     const canBuy   = G.money >= cost && unlocked;
-
-    let desc = v.description;
     let rate, costLabel;
 
-    if (!unlocked && v.unlockCondition) {
+    if (lv === 0 && !unlocked && v.unlockCondition) {
       const { areaId, spotsNeeded } = v.unlockCondition;
       const visited  = G.areaVisits[areaId] || 0;
       const areaName = AREAS.find(a => a.id === areaId)?.name || areaId;
@@ -423,7 +437,7 @@ function renderVehicles(el) {
     }
 
     const div = makeShopItem(
-      v.emoji, v.name, desc, rate, costLabel,
+      v.emoji, v.name, v.description, rate, costLabel,
       canBuy, unlocked ? `buyVehicle('${v.id}')` : ''
     );
     el.appendChild(div);
@@ -683,11 +697,11 @@ function drawScene(ts) {
     }
   }
 
-  // ランドマーク（通過時5秒表示・フェードイン/アウト）
-  if (landmark.timer > 0) {
-    const fadeIn  = Math.min(1, (landmark.maxTimer - landmark.timer) / 400);
-    const fadeOut = Math.min(1, landmark.timer / 700);
-    ctx.globalAlpha = Math.min(fadeIn, fadeOut);
+  // ランドマーク（スポット訪問中は常時表示、到着時フェードイン）
+  if (landmark.id) {
+    const age     = landmark.maxTimer - landmark.timer;  // 経過ms
+    const fadeIn  = Math.min(1, age / 500);
+    ctx.globalAlpha = fadeIn;
     drawLandmark(landmark.id, W, Math.round(H * 0.65));
     ctx.globalAlpha = 1;
   }

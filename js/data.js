@@ -6,6 +6,7 @@
 const AREAS = [
   {
     id: 'neighborhood',
+    defaultLandmark: 'konbini',
     name: '近所',
     emoji: '🏘️',
     phase: 'japan',
@@ -69,6 +70,7 @@ const AREAS = [
 
   {
     id: 'city',
+    defaultLandmark: 'station',
     name: '市内',
     emoji: '🏙️',
     phase: 'japan',
@@ -137,6 +139,7 @@ const AREAS = [
 
   {
     id: 'downtown',
+    defaultLandmark: 'tokyo_tower',
     name: '都内',
     emoji: '🗼',
     phase: 'japan',
@@ -205,6 +208,7 @@ const AREAS = [
 
   {
     id: 'kanto',
+    defaultLandmark: 'kamakura',
     name: '関東',
     emoji: '🗾',
     phase: 'japan',
@@ -273,6 +277,7 @@ const AREAS = [
 
   {
     id: 'east_japan',
+    defaultLandmark: 'castle',
     name: '東日本',
     emoji: '🏔️',
     phase: 'japan',
@@ -336,6 +341,7 @@ const AREAS = [
 
   {
     id: 'japan',
+    defaultLandmark: 'kyoto_fushimi',
     name: '全国',
     emoji: '🗾',
     phase: 'japan',
@@ -404,6 +410,7 @@ const AREAS = [
 
   {
     id: 'world',
+    defaultLandmark: 'paris',
     name: '海外',
     emoji: '🌍',
     phase: 'europe',
@@ -471,6 +478,7 @@ const AREAS = [
 
   {
     id: 'space',
+    defaultLandmark: 'rocket_launch',
     name: '宇宙',
     emoji: '🚀',
     phase: 'space',
@@ -697,104 +705,14 @@ const SPONSORS = [
 // EQUIPMENT
 // ============================================================
 const EQUIPMENT = [
-  {
-    id: 'ring_light',
-    name: 'リングライト',
-    emoji: '💡',
-    description: '自撮りが格段にきれいになる',
-    moneyMult: 1.2,
-    followerMult: 1.1,
-    baseCost: 3000,
-    costMult: 1.5,
-  },
-  {
-    id: 'smartphone',
-    name: 'スマートフォン',
-    emoji: '📱',
-    description: 'いつでもどこでも撮影できる',
-    moneyMult: 1.3,
-    followerMult: 1.2,
-    baseCost: 15000,
-    costMult: 1.5,
-  },
-  {
-    id: 'mic',
-    name: 'マイク',
-    emoji: '🎙️',
-    description: '音声クオリティが大幅アップ',
-    moneyMult: 1.2,
-    followerMult: 1.3,
-    baseCost: 20000,
-    costMult: 1.5,
-  },
-  {
-    id: 'gimbal',
-    name: 'ジンバル',
-    emoji: '📸',
-    description: 'ブレのない滑らかな動画に',
-    moneyMult: 1.4,
-    followerMult: 1.3,
-    baseCost: 50000,
-    costMult: 1.5,
-  },
-  {
-    id: 'dslr',
-    name: '一眼レフ',
-    emoji: '📷',
-    description: 'プロ並みの写真で一気に差をつける',
-    moneyMult: 1.5,
-    followerMult: 1.5,
-    baseCost: 200000,
-    costMult: 1.5,
-  },
-  {
-    id: 'drone',
-    name: 'ドローン',
-    emoji: '🚁',
-    description: '空撮で絶景を独り占め',
-    moneyMult: 1.8,
-    followerMult: 1.8,
-    baseCost: 800000,
-    costMult: 1.5,
-  },
-  {
-    id: 'cam360',
-    name: '360度カメラ',
-    emoji: '🔮',
-    description: 'どこを向いても撮れる未来の視点',
-    moneyMult: 2.0,
-    followerMult: 2.0,
-    baseCost: 3000000,
-    costMult: 1.5,
-  },
-  {
-    id: 'pro_video',
-    name: 'プロビデオカメラ',
-    emoji: '🎥',
-    description: '映画品質の映像で視聴者を魅了',
-    moneyMult: 2.5,
-    followerMult: 2.5,
-    baseCost: 15000000,
-    costMult: 1.5,
-  },
-  {
-    id: 'space_cam',
-    name: '宇宙対応カメラ',
-    emoji: '🛰️',
-    description: '真空・放射線耐性の特殊カメラ',
-    moneyMult: 4.0,
-    followerMult: 4.0,
-    baseCost: 200000000,
-    costMult: 1.5,
-  },
-  {
-    id: 'quantum_cam',
-    name: '量子カメラ',
-    emoji: '⚛️',
-    description: '時空を超えた映像を記録する',
-    moneyMult: 8.0,
-    followerMult: 8.0,
-    baseCost: 5000000000,
-    costMult: 1.5,
-  },
+  { id: 'ring_light',  name: 'リングライト',      emoji: '💡', description: '顔まわりの照明をプロ仕様に。映え度UP',          baseMult: 1.2, baseCost: 3000,       costMult: 1.2, popularityRequired: 0     },
+  { id: 'smartphone',  name: 'スマホ（最新機種）', emoji: '📱', description: '最新カメラで撮影クオリティが大幅UP',             baseMult: 1.3, baseCost: 15000,      costMult: 1.25,popularityRequired: 0     },
+  { id: 'mic',         name: 'マイク',             emoji: '🎤', description: 'クリアな音声でエンゲージメントUP',              baseMult: 1.25,baseCost: 20000,      costMult: 1.2, popularityRequired: 5     },
+  { id: 'gimbal',      name: 'ジンバル',           emoji: '🎥', description: 'なめらかな動画でプロ感が出る',                  baseMult: 1.3, baseCost: 50000,      costMult: 1.2, popularityRequired: 15    },
+  { id: 'dslr',        name: '一眼レフ',           emoji: '📷', description: 'ボケ感のある写真でいいね急増',                  baseMult: 1.5, baseCost: 200000,     costMult: 1.3, popularityRequired: 25    },
+  { id: 'drone',       name: 'ドローン',           emoji: '🚁', description: '空撮で唯一無二の構図。再生数爆増',              baseMult: 2.0, baseCost: 800000,     costMult: 1.35,popularityRequired: 60    },
+  { id: 'cam360',      name: '360°カメラ',         emoji: '🌐', description: '没入感で視聴継続率が跳ね上がる',                baseMult: 1.8, baseCost: 3000000,    costMult: 1.3, popularityRequired: 200   },
+  { id: 'pro_video',   name: 'プロ用ビデオカメラ', emoji: '🎬', description: '映画レベルの映像でスポンサー殺到',              baseMult: 2.5, baseCost: 15000000,   costMult: 1.4, popularityRequired: 1000  },
+  { id: 'space_cam',   name: '宇宙望遠鏡カメラ',  emoji: '🔭', description: '宇宙の絶景を超解像で記録',                      baseMult: 4.0, baseCost: 200000000,  costMult: 1.5, popularityRequired: 10000 },
+  { id: 'quantum_cam', name: '量子カメラ',         emoji: '⚛️', description: '時空を超えた撮影で宇宙規模バズ',                baseMult: 8.0, baseCost: 5000000000, costMult: 1.6, popularityRequired: 100000},
 ];
